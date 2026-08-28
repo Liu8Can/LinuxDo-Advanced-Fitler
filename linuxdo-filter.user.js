@@ -25,7 +25,9 @@
     catMapPromise: null,
     buckets: {},           // pageKey -> { map:Map(id->topic), order:[id] }
     rules: [],             // 全部规则原始对象（落库形态）
-    predicates: [],        // [{name, fn, scope}] 已编译且 active 的谓词
+    filterPredicates: [],    // [{name, fn, scope}] 已编译且 active 的过滤谓词
+    highlightPredicates: [], // [{name, fn, scope}] 已编译且 active 的高亮谓词
+    pageHighlights: {},      // pageKey -> Set(topicId) 当前页高亮的帖 id
     currentPage: null,     // { kind:'home'|'category'|'other', route?, categoryId?, key }
   };
 
@@ -291,8 +293,9 @@
 
   // 当前页是否存在任一启用规则命中 → 决定是否拦截
   function pageHasActiveRule(pg) {
-    for (var i = 0; i < state.predicates.length; i++) {
-      if (ruleAppliesToPage(state.predicates[i], pg)) return true;
+    var preds = state.filterPredicates.concat(state.highlightPredicates);
+    for (var i = 0; i < preds.length; i++) {
+      if (ruleAppliesToPage(preds[i], pg)) return true;
     }
     return false;
   }
@@ -302,24 +305,38 @@
     var raw = gmGet(RULES_KEY, []);
     if (!Array.isArray(raw)) raw = [];
     state.rules = raw;
-    state.predicates = [];
+    state.filterPredicates = [];
+    state.highlightPredicates = [];
     raw.forEach(function (r) {
       if (r.status !== 'active') return;
       try {
         var ast = parseDSL(r.expr || '');
         if (!state.catMap) ensureCatMapFallback();
         var fn = compile(ast);
-        state.predicates.push({ name: r.name, fn: fn, scope: r.scope || { type: 'global' } });
+        var entry = { name: r.name, fn: fn, scope: r.scope || { type: 'global' } };
+        if (r.mode === 'highlight') state.highlightPredicates.push(entry);
+        else state.filterPredicates.push(entry);
       } catch (e) { /* 编译错误静默，编辑器会显示 */ }
     });
-    log('规则编译完成：active 谓词', state.predicates.length, '条，规则总数', raw.length);
+    log('规则编译完成：过滤', state.filterPredicates.length, '高亮', state.highlightPredicates.length, '规则总数', raw.length);
+  }
+
+  function isHighlighted(topic, pg) {
+    if (!state.highlightPredicates.length) return false;
+    for (var i = 0; i < state.highlightPredicates.length; i++) {
+      if (!ruleAppliesToPage(state.highlightPredicates[i], pg)) continue;
+      try { if (state.highlightPredicates[i].fn(topic)) return true; } catch (e) {}
+    }
+    return false;
   }
 
   function isFiltered(topic, pg) {
-    if (!state.predicates.length) return false;
-    for (var i = 0; i < state.predicates.length; i++) {
-      if (!ruleAppliesToPage(state.predicates[i], pg)) continue;
-      try { if (state.predicates[i].fn(topic)) return true; } catch (e) {}
+    // 高亮优先：若命中高亮规则，则不过滤
+    if (isHighlighted(topic, pg)) return false;
+    if (!state.filterPredicates.length) return false;
+    for (var i = 0; i < state.filterPredicates.length; i++) {
+      if (!ruleAppliesToPage(state.filterPredicates[i], pg)) continue;
+      try { if (state.filterPredicates[i].fn(topic)) return true; } catch (e) {}
     }
     return false;
   }
@@ -360,17 +377,27 @@
     return b ? b.map : new Map();
   }
 
-  // ───────────────────────── 核心：切分 kept/filtered ─────────────────────────
+  // ───────────────────────── 核心：切分 highlighted/kept/filtered ─────────────────────────
   function splitTopics(topics, pg) {
-    var kept = [], filtered = [];
-    (topics || []).forEach(function (t) { if (isFiltered(t, pg)) filtered.push(t); else kept.push(t); });
-    return { kept: kept, filtered: filtered };
+    var highlighted = [], kept = [], filtered = [], hlIds = new Set();
+    (topics || []).forEach(function (t) {
+      if (isHighlighted(t, pg)) { highlighted.push(t); hlIds.add(t.id); }
+      else if (isFiltered(t, pg)) filtered.push(t);
+      else kept.push(t);
+    });
+    return { kept: kept, filtered: filtered, highlighted: highlighted, hlIds: hlIds };
   }
   function processTopicList(pg, obj) {
     if (!obj || !obj.topic_list || !Array.isArray(obj.topic_list.topics)) return null;
     var sp = splitTopics(obj.topic_list.topics, pg);
     if (sp.filtered.length) bucketAddMany(pg.key, sp.filtered);
-    obj.topic_list.topics = sp.kept;
+    // 高亮帖排到数组前部 → Ember 自然渲染到列表顶部
+    obj.topic_list.topics = sp.highlighted.concat(sp.kept);
+    // 记录当前页高亮 id（供 DOM 样式用）
+    if (sp.hlIds.size) {
+      if (!state.pageHighlights[pg.key]) state.pageHighlights[pg.key] = new Set();
+      sp.hlIds.forEach(function (id) { state.pageHighlights[pg.key].add(id); });
+    }
     return sp;
   }
 
@@ -523,6 +550,20 @@
     }
   }
 
+  // 给渲染后的高亮帖 <tr> 加样式 class
+  function tryApplyHighlights() {
+    if (!state.currentPage) return;
+    var hlSet = state.pageHighlights[state.currentPage.key];
+    if (!hlSet || !hlSet.size) return;
+    var rows = document.querySelectorAll('.topic-list-body tr[data-topic-id]');
+    rows.forEach(function (tr) {
+      var id = parseInt(tr.getAttribute('data-topic-id'), 10);
+      if (hlSet.has(id)) {
+        if (!tr.classList.contains('ldf-highlight')) tr.classList.add('ldf-highlight');
+      }
+    });
+  }
+
   // ───────────────────────── UI：顶栏按钮 + 抽屉 ─────────────────────────
   var ui = { topBtn: null, drawer: null };
 
@@ -646,12 +687,13 @@
     } else {
       rules.forEach(function (r, idx) {
         var statusTag = r.status === 'draft' ? '<span class="ldf-tag-draft">草稿</span>' : '';
+        var modeTag = r.mode === 'highlight' ? '<span class="ldf-tag-highlight">高亮</span>' : '<span class="ldf-tag-filter">过滤</span>';
         var activeCls = r.status === 'active' ? 'ldf-active' : 'ldf-draft';
         rowsHtml +=
           '<div class="ldf-rule-row ' + activeCls + '" data-idx="' + idx + '">'
           + '<label class="ldf-switch"><input type="checkbox" class="ldf-toggle"' + (r.status === 'active' ? ' checked' : '') + '><span class="ldf-slider"></span></label>'
           + '<div class="ldf-rule-info">'
-          + '<div class="ldf-rule-name">' + escHtml(r.name || '(未命名)') + ' ' + statusTag + '</div>'
+          + '<div class="ldf-rule-name">' + modeTag + ' ' + escHtml(r.name || '(未命名)') + ' ' + statusTag + '</div>'
           + '<div class="ldf-rule-meta"><span class="ldf-rule-scope">' + escHtml(scopeSummary(r.scope)) + '</span> · <code class="ldf-rule-expr">' + escHtml((r.expr || '').slice(0, 60)) + (r.expr && r.expr.length > 60 ? '…' : '') + '</code></div>'
           + '</div>'
           + '<div class="ldf-rule-actions">'
@@ -704,7 +746,7 @@
   // ── 编辑视图 ──
   function openEditView(idx) {
     editView = 'edit';
-    editingRule = (idx == null) ? { name: '', status: 'active', expr: '', scope: { type: 'global' } } : JSON.parse(JSON.stringify(state.rules[idx]));
+    editingRule = (idx == null) ? { name: '', mode: 'filter', status: 'active', expr: '', scope: { type: 'global' } } : JSON.parse(JSON.stringify(state.rules[idx]));
     editingRule._idx = idx;
     var box = modal.querySelector('#ldf-view-edit');
     box.innerHTML = buildEditForm(editingRule);
@@ -718,10 +760,16 @@
     var catTree = buildCatTreeHtml(r.scope);
     var scopeType = (r.scope && r.scope.type) || 'global';
     var includeHome = (r.scope && r.scope.includeHome) ? 'checked' : '';
+    var mode = r.mode || 'filter';
     return ''
       + '<div class="ldf-modal-header"><b>' + (r._idx == null ? '新建规则' : '编辑规则') + '</b><span class="ldf-close-icon" data-act="back" title="返回列表">✕</span></div>'
       + '<div class="ldf-edit-body">'
       + '<div class="ldf-field"><label>规则名</label><input type="text" id="ldf-name" value="' + escAttr(r.name || '') + '" placeholder="给规则起个名字"></div>'
+      + '<div class="ldf-field"><label>规则类型</label>'
+      + '<div class="ldf-scope-row">'
+      + '<label><input type="radio" name="ldf-mode" value="filter"' + (mode === 'filter' ? ' checked' : '') + '> 过滤（隐藏匹配帖）</label>'
+      + '<label><input type="radio" name="ldf-mode" value="highlight"' + (mode === 'highlight' ? ' checked' : '') + '> 高亮（置顶+标记匹配帖）</label>'
+      + '</div></div>'
       + '<div class="ldf-field"><label>作用域</label>'
       + '<div class="ldf-scope-row"><label><input type="radio" name="ldf-scope" value="global"' + (scopeType === 'global' ? ' checked' : '') + '> 全局</label>'
       + '<label><input type="radio" name="ldf-scope" value="home"' + (scopeType === 'home' ? ' checked' : '') + '> 仅首页流</label>'
@@ -732,7 +780,7 @@
       + '<label class="ldf-include-home"><input type="checkbox" id="ldf-include-home" ' + includeHome + '> 同时作用于首页流</label>'
       + '</div>'
       + '</div>'
-      + '<div class="ldf-field"><label>过滤表达式 (DSL)</label>'
+      + '<div class="ldf-field"><label>匹配表达式 (DSL)</label>'
       + '<textarea id="ldf-expr" placeholder="例如：category(搞七捻三,0,1,2,3) AND (tag(纯水) OR tag(病友))">' + escHtml(r.expr || '') + '</textarea>'
       + '<span id="ldf-expr-status" class="ldf-expr-status"></span></div>'
       + '<div class="ldf-field"><label>匹配预览</label>'
@@ -810,6 +858,7 @@
     var box = modal.querySelector('#ldf-view-edit');
     var name = (box.querySelector('#ldf-name').value || '').trim();
     var expr = (box.querySelector('#ldf-expr').value || '').trim();
+    var mode = box.querySelector('input[name="ldf-mode"]:checked').value;
     var scopeType = box.querySelector('input[name="ldf-scope"]:checked').value;
     var scope;
     if (scopeType === 'global') scope = { type: 'global' };
@@ -820,7 +869,7 @@
       var includeHome = box.querySelector('#ldf-include-home').checked;
       scope = { type: 'category', categoryIds: catIds, includeHome: includeHome };
     }
-    return { name: name, expr: expr, scope: scope };
+    return { name: name, mode: mode, expr: expr, scope: scope };
   }
 
   function saveEditingRule(status) {
@@ -853,7 +902,14 @@
       if (!state.catMap) { resultEl.innerHTML = '<span class="ldf-pv-idle">类别映射加载中…</span>'; return; }
       var fn = compile(ast);
       var hit = fn(mockTopic);
-      resultEl.innerHTML = hit ? '<span class="ldf-pv-hit">✓ 命中：这条帖子会被过滤</span>' : '<span class="ldf-pv-miss">✗ 未命中：这条帖子不会被过滤</span>';
+      var mode = box.querySelector('input[name="ldf-mode"]:checked').value;
+      if (hit) {
+        resultEl.innerHTML = mode === 'highlight'
+          ? '<span class="ldf-pv-hl">✓ 命中：这条帖子会被高亮（置顶+标记）</span>'
+          : '<span class="ldf-pv-hit">✓ 命中：这条帖子会被过滤（隐藏）</span>';
+      } else {
+        resultEl.innerHTML = '<span class="ldf-pv-miss">✗ 未命中：这条帖子不受影响</span>';
+      }
     } catch (e) {
       resultEl.innerHTML = '<span class="ldf-pv-err">✗ 表达式错误：' + escHtml(e.message) + '</span>';
     }
@@ -886,6 +942,7 @@
           existingNames.add(name);
           state.rules.push({
             name: name,
+            mode: r.mode || 'filter',
             status: r.status || 'draft',
             expr: r.expr || '',
             scope: r.scope || { type: 'global' }
@@ -911,6 +968,9 @@
     var css = document.createElement('style');
     css.textContent = [
       '.ldf-selfempty a{cursor:pointer}',
+      '.ldf-highlight{background:rgba(255,176,0,.12)!important;border-left:3px solid #ffb000!important}',
+      '.ldf-highlight:hover{background:rgba(255,176,0,.18)!important}',
+      '.ldf-highlight .title{font-weight:600}',
       '#ldf-topbtn .ldf-count{font-weight:600}',
       '#ldf-drawer{position:fixed;inset:0;z-index:100001;pointer-events:none;contain:layout style}',
       '#ldf-drawer .ldf-drawer-overlay{position:absolute;inset:0;background:rgba(0,0,0,0);transition:background .2s;pointer-events:auto}',
@@ -946,6 +1006,8 @@
       '#ldf-modal .ldf-rule-info{flex:1;min-width:0}',
       '#ldf-modal .ldf-rule-name{font-weight:600;font-size:14px;margin-bottom:2px}',
       '#ldf-modal .ldf-tag-draft{font-size:11px;background:var(--primary-low,#ddd);color:var(--primary-medium,#888);padding:1px 6px;border-radius:3px;margin-left:4px}',
+      '#ldf-modal .ldf-tag-highlight{font-size:11px;background:rgba(255,176,0,.2);color:#b07000;padding:1px 6px;border-radius:3px;margin-right:4px}',
+      '#ldf-modal .ldf-tag-filter{font-size:11px;background:rgba(208,44,37,.15);color:#d12c25;padding:1px 6px;border-radius:3px;margin-right:4px}',
       '#ldf-modal .ldf-rule-meta{font-size:12px;color:var(--primary-medium,#888);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '#ldf-modal .ldf-rule-expr{font-family:monospace}',
       '#ldf-modal .ldf-rule-actions{display:flex;gap:4px;flex-shrink:0}',
@@ -975,7 +1037,7 @@
       '#ldf-modal .ldf-preview{border:1px solid var(--primary-low,#eee);border-radius:4px;padding:10px}',
       '#ldf-modal .ldf-preview input,#ldf-modal .ldf-preview select{margin-bottom:6px}',
       '#ldf-modal .ldf-pv-result{font-size:13px;padding:6px 0}',
-      '#ldf-modal .ldf-pv-hit{color:#d12c25}#ldf-modal .ldf-pv-miss{color:#2a9d4a}#ldf-modal .ldf-pv-err{color:#d12c25}#ldf-modal .ldf-pv-idle{color:var(--primary-medium,#888)}'
+      '#ldf-modal .ldf-pv-hit{color:#d12c25}#ldf-modal .ldf-pv-miss{color:#2a9d4a}#ldf-modal .ldf-pv-err{color:#d12c25}#ldf-modal .ldf-pv-idle{color:var(--primary-medium,#888)}#ldf-modal .ldf-pv-hl{color:#b07000}'
     ].join('\n');
     document.head.appendChild(css);
 
@@ -994,6 +1056,7 @@
         syncCurrentPage();
         ensureTopBtn();
         tryRenderSelfEmpty();
+        tryApplyHighlights();
         var curKey = state.currentPage ? state.currentPage.key : null;
         if (curKey !== prevKey) {
           updateCount();
@@ -1020,6 +1083,6 @@
     try { GM_registerMenuCommand('LinuxDo 过滤器 · 设置', openModal); } catch (e) {}
   }
 
-  try { window.__LDF = { state: state, parseDSL: parseDSL, reloadRules: reloadRules, pageContext: pageContext, ruleAppliesToPage: ruleAppliesToPage }; } catch (e) {}
+  try { window.__LDF = { state: state, parseDSL: parseDSL, reloadRules: reloadRules, pageContext: pageContext, ruleAppliesToPage: ruleAppliesToPage, isHighlighted: isHighlighted, isFiltered: isFiltered, splitTopics: splitTopics }; } catch (e) {}
 
 })();
