@@ -573,6 +573,7 @@
     if (ui.drawer) return ui.drawer;
     var el = document.createElement('div');
     el.id = 'ldf-drawer';
+    el.style.display = 'none';
     el.innerHTML =
       '<div class="ldf-drawer-overlay"></div>'
       + '<div class="ldf-drawer-panel">'
@@ -589,13 +590,20 @@
     return el;
   }
 
+  var savedBodyOverflow = null;
   function openDrawer() {
     buildDrawer();
     renderDrawer();
-    ui.drawer.classList.add('ldf-drawer-open');
+    ui.drawer.style.display = 'block';
+    if (savedBodyOverflow === null) savedBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    requestAnimationFrame(function () { ui.drawer.classList.add('ldf-drawer-open'); });
   }
   function closeDrawer() {
-    if (ui.drawer) ui.drawer.classList.remove('ldf-drawer-open');
+    if (!ui.drawer) return;
+    ui.drawer.classList.remove('ldf-drawer-open');
+    if (savedBodyOverflow !== null) { document.body.style.overflow = savedBodyOverflow; savedBodyOverflow = null; }
+    setTimeout(function () { if (ui.drawer && !ui.drawer.classList.contains('ldf-drawer-open')) ui.drawer.style.display = 'none'; }, 220);
   }
   function toggleDrawer() {
     buildDrawer();
@@ -753,8 +761,8 @@
     css.textContent = [
       '.ldf-selfempty a{cursor:pointer}',
       '#ldf-topbtn .ldf-count{font-weight:600}',
-      '#ldf-drawer{position:fixed;inset:0;z-index:100001;pointer-events:none}',
-      '#ldf-drawer .ldf-drawer-overlay{position:absolute;inset:0;background:rgba(0,0,0,0);transition:background .2s}',
+      '#ldf-drawer{position:fixed;inset:0;z-index:100001;pointer-events:none;contain:layout style}',
+      '#ldf-drawer .ldf-drawer-overlay{position:absolute;inset:0;background:rgba(0,0,0,0);transition:background .2s;pointer-events:auto}',
       '#ldf-drawer .ldf-drawer-panel{position:absolute;top:0;right:0;height:100vh;width:440px;max-width:90vw;background:var(--secondary,#fff);color:var(--primary,#222);box-shadow:-4px 0 24px rgba(0,0,0,.2);transform:translateX(100%);transition:transform .2s;display:flex;flex-direction:column;overflow:hidden}',
       '#ldf-drawer.ldf-drawer-open{pointer-events:auto}',
       '#ldf-drawer.ldf-drawer-open .ldf-drawer-overlay{background:rgba(0,0,0,.35)}',
