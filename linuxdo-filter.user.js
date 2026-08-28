@@ -19,7 +19,6 @@
   // 不拦：/c /tag /u /search /t /posted /bookmarks 及 ?category= 缩范围
   var BUCKET_MAX = 1000;
   var RULES_KEY = 'ldf_rules_v1';        // [{name, enabled, expr}]
-  var PAUSED_KEY = 'ldf_paused_v1';      // bool
   var CAT_TTL_KEY = 'ldf_catmap_ts';     // 兜底 fetch 缓存时间戳（会话内不主动用，留作扩展）
 
   // ───────────────────────── 状态 ─────────────────────────
@@ -29,7 +28,6 @@
     buckets: {},           // route -> { map:Map(id->topic), order:[id] } 按路由分段
     predicates: [],        // 已编译且启用的规则谓词 [{name, fn}]
     rulesMeta: [],         // 全部规则元信息（含错误）供编辑器展示 [{name,enabled,expr,error}]
-    paused: false,
     currentRoute: null,    // 当前所在全局路由名（latest/new/unseen/hot/top/read）；非过滤路由为 null
   };
 
@@ -285,15 +283,13 @@
   function reloadRules() {
     var raw = gmGet(RULES_KEY, []);
     if (!Array.isArray(raw)) raw = [];
-    state.paused = !!gmGet(PAUSED_KEY, false);
     state.rulesMeta = raw.map(function (r) { return { name: r.name, enabled: !!r.enabled, expr: r.expr || '', error: null }; });
     state.predicates = [];
-    if (state.paused) { log('过滤已暂停，跳过编译'); return; }
     raw.forEach(function (r) {
       if (!r.enabled) return;
       try {
         var ast = parseDSL(r.expr || '');
-        if (!state.catMap) ensureCatMapFallback(); // 异步补，但本次编译 category 可能失败
+        if (!state.catMap) ensureCatMapFallback();
         var fn = compile(ast);
         state.predicates.push({ name: r.name, fn: fn });
       } catch (e) {
@@ -306,7 +302,7 @@
 
   // 命中任一启用谓词 → true（OR 合并）
   function isFiltered(topic) {
-    if (state.paused || !state.predicates.length) return false;
+    if (!state.predicates.length) return false;
     for (var i = 0; i < state.predicates.length; i++) {
       try { if (state.predicates[i].fn(topic)) return true; } catch (e) { /* 运行期忽略 */ }
     }
@@ -396,7 +392,6 @@
       var url = (typeof input === 'string') ? input : (input && input.url) ? input.url : '';
       var route = routeNameFromUrl(url);
       return _fetch.apply(this, arguments).then(function (resp) {
-        if (state.paused) return resp;
         if (!route) return resp;
         var ct = resp.headers.get('content-type') || '';
         if (ct.indexOf('json') === -1) return resp;
@@ -432,7 +427,7 @@
     XMLHttpRequest.prototype.send = function () {
       var xhr = this;
       var route = routeNameFromUrl(xhr.__ldf_url || '');
-      if (route && !state.paused && descText) {
+      if (route && descText) {
         var install = function () {
           if (xhr.__ldf_done) return; xhr.__ldf_done = true;
           try {
@@ -676,7 +671,6 @@
       '<div style="background:var(--secondary,#fff);color:var(--primary,#222);width:760px;max-width:100%;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.3);overflow:hidden;font-family:inherit">'
       + '<div style="padding:14px 18px;border-bottom:1px solid var(--primary-low,#ddd);display:flex;align-items:center;justify-content:space-between">'
       + '<b>LinuxDo 主题过滤器</b>'
-      + '<label style="font-weight:normal;cursor:pointer"><input type="checkbox" id="ldf-pause"> 暂停所有过滤</label>'
       + '</div>'
       + '<div id="ldf-rules" style="padding:14px 18px;max-height:60vh;overflow:auto"></div>'
       + '<div style="padding:12px 18px;border-top:1px solid var(--primary-low,#ddd);display:flex;justify-content:space-between">'
@@ -689,11 +683,6 @@
     el.querySelector('#ldf-cancel').addEventListener('click', function () { modal.style.display = 'none'; });
     el.querySelector('#ldf-save').addEventListener('click', saveFromModal);
     el.querySelector('#ldf-add').addEventListener('click', function () { addRuleRow({ name: '', enabled: true, expr: '', error: null }); });
-    el.querySelector('#ldf-pause').addEventListener('change', function (e) {
-      gmSet(PAUSED_KEY, e.target.checked);
-      state.paused = e.target.checked;
-      reloadRules();
-    });
     return modal;
   }
 
@@ -731,7 +720,6 @@
     var box = modal.querySelector('#ldf-rules'); box.innerHTML = '';
     state.rulesMeta.slice().forEach(addRuleRow);
     if (!state.rulesMeta.length) addRuleRow({ name: '', enabled: true, expr: '', error: null });
-    modal.querySelector('#ldf-pause').checked = state.paused;
     modal.style.display = 'flex';
   }
 
@@ -747,10 +735,8 @@
       next.push({ name: name, enabled: enabled, expr: expr });
     });
     gmSet(RULES_KEY, next);
-    reloadRules();
     modal.style.display = 'none';
-    // 对当前已缓存的 topics 没有保留原列表，只能提示用户刷新以即时重跑
-    log('规则已保存，刷新页面以对新列表即时生效');
+    location.reload();
   }
 
   // 设置入口仅保留 GM 菜单
@@ -823,10 +809,6 @@
 
     try {
       GM_registerMenuCommand('LinuxDo 过滤器 · 设置', openModal);
-      GM_registerMenuCommand('暂停/恢复全部过滤', function () {
-        state.paused = !state.paused; gmSet(PAUSED_KEY, state.paused); reloadRules();
-        log(state.paused ? '已暂停' : '已恢复');
-      });
     } catch (e) {}
   }
 
