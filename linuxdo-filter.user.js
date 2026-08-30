@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 主题过滤器
 // @namespace    https://linux.do/
-// @version      0.2.0
+// @version      0.3.0
 // @description  按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。
 // @author       you
 // @match        https://linux.do/*
@@ -565,20 +565,43 @@
   }
 
   // ───────────────────────── UI：顶栏按钮 + 抽屉 ─────────────────────────
-  var ui = { topBtn: null, drawer: null };
+  var ui = { group: null, topBtn: null, drawer: null };
+
+  var SETTINGS_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
 
   function ensureTopBtn() {
     var cont = document.querySelector('.header-buttons, .d-header .icons, ul.d-header-icons');
     if (!cont) return;
-    if (ui.topBtn && ui.topBtn.parentNode === cont) { updateCount(); return; }
-    if (document.querySelector('#ldf-topbtn')) { ui.topBtn = document.querySelector('#ldf-topbtn'); updateCount(); return; }
+    if (ui.group && ui.group.parentNode === cont) { updateCount(); return; }
+    if (document.querySelector('#ldf-header-group')) {
+      ui.group = document.querySelector('#ldf-header-group');
+      ui.topBtn = document.querySelector('#ldf-topbtn');
+      updateCount();
+      return;
+    }
+    var group = document.createElement('div');
+    group.id = 'ldf-header-group';
+
+    var gear = document.createElement('button');
+    gear.id = 'ldf-settings-btn';
+    gear.type = 'button';
+    gear.className = 'ldf-icon-btn';
+    gear.title = '过滤器设置';
+    gear.setAttribute('aria-label', '过滤器设置');
+    gear.innerHTML = SETTINGS_SVG;
+    gear.addEventListener('click', function () { openModal(); });
+
     var btn = document.createElement('button');
     btn.id = 'ldf-topbtn';
-    btn.className = 'btn btn-default';
-    btn.style.cssText = 'margin-left:6px;cursor:pointer;font-size:13px;white-space:nowrap';
+    btn.type = 'button';
+    btn.className = 'ldf-count-btn';
     btn.innerHTML = '<span class="ldf-count">已过滤 (0)</span>';
     btn.addEventListener('click', function () { toggleDrawer(); });
-    cont.appendChild(btn);
+
+    group.appendChild(gear);
+    group.appendChild(btn);
+    cont.appendChild(group);
+    ui.group = group;
     ui.topBtn = btn;
     updateCount();
   }
@@ -683,18 +706,20 @@
     var rules = state.rules.slice();
     var rowsHtml = '';
     if (!rules.length) {
-      rowsHtml = '<div class="ldf-empty">暂无规则，点击「新建规则」开始。</div>';
+      rowsHtml = '<div class="ldf-empty"><div class="ldf-empty-icon">☰</div><div class="ldf-empty-text">暂无规则</div><div class="ldf-empty-sub">点击右上方「新建规则」开始过滤你不想看到的主题</div></div>';
     } else {
       rules.forEach(function (r, idx) {
         var statusTag = r.status === 'draft' ? '<span class="ldf-tag-draft">草稿</span>' : '';
         var modeTag = r.mode === 'highlight' ? '<span class="ldf-tag-highlight">高亮</span>' : '<span class="ldf-tag-filter">过滤</span>';
         var activeCls = r.status === 'active' ? 'ldf-active' : 'ldf-draft';
+        var fullExpr = r.expr || '';
+        var exprShow = fullExpr.slice(0, 80);
         rowsHtml +=
           '<div class="ldf-rule-row ' + activeCls + '" data-idx="' + idx + '">'
           + '<label class="ldf-switch"><input type="checkbox" class="ldf-toggle"' + (r.status === 'active' ? ' checked' : '') + '><span class="ldf-slider"></span></label>'
           + '<div class="ldf-rule-info">'
-          + '<div class="ldf-rule-name">' + modeTag + ' ' + escHtml(r.name || '(未命名)') + ' ' + statusTag + '</div>'
-          + '<div class="ldf-rule-meta"><span class="ldf-rule-scope">' + escHtml(scopeSummary(r.scope)) + '</span> · <code class="ldf-rule-expr">' + escHtml((r.expr || '').slice(0, 60)) + (r.expr && r.expr.length > 60 ? '…' : '') + '</code></div>'
+          + '<div class="ldf-rule-name">' + modeTag + '<span class="ldf-rule-title">' + escHtml(r.name || '(未命名)') + '</span>' + statusTag + '</div>'
+          + '<div class="ldf-rule-meta"><span class="ldf-scope-chip">' + escHtml(scopeSummary(r.scope)) + '</span><code class="ldf-rule-expr" title="' + escAttr(fullExpr) + '">' + escHtml(exprShow) + (fullExpr.length > 80 ? '…' : '') + '</code></div>'
           + '</div>'
           + '<div class="ldf-rule-actions">'
           + '<button class="ldf-btn-edit" data-idx="' + idx + '">编辑</button>'
@@ -704,11 +729,12 @@
       });
     }
     box.innerHTML =
-      '<div class="ldf-modal-header"><b>LinuxDo 主题过滤器</b><span class="ldf-close-icon" data-act="close" title="关闭">✕</span></div>'
+      '<div class="ldf-modal-header"><div class="ldf-modal-titles"><div class="ldf-modal-title">主题过滤器</div><div class="ldf-modal-sub">管理过滤 / 高亮规则</div></div><span class="ldf-close-icon" data-act="close" title="关闭">✕</span></div>'
       + '<div class="ldf-list-toolbar">'
-      + '<button id="ldf-add" class="btn btn-primary">+ 新建规则</button>'
-      + '<button id="ldf-export" class="btn btn-default">导出</button>'
-      + '<button id="ldf-import" class="btn btn-default">导入</button>'
+      + '<button id="ldf-add" class="btn btn-primary ldf-btn-add">+ 新建规则</button>'
+      + '<span class="ldf-toolbar-spacer"></span>'
+      + '<button id="ldf-export" class="ldf-btn-ghost">导出</button>'
+      + '<button id="ldf-import" class="ldf-btn-ghost">导入</button>'
       + '<input type="file" id="ldf-import-file" accept=".json,application/json" style="display:none">'
       + '</div>'
       + '<div class="ldf-list-body">' + rowsHtml + '</div>'
@@ -762,18 +788,20 @@
     var includeHome = (r.scope && r.scope.includeHome) ? 'checked' : '';
     var mode = r.mode || 'filter';
     return ''
-      + '<div class="ldf-modal-header"><b>' + (r._idx == null ? '新建规则' : '编辑规则') + '</b><span class="ldf-close-icon" data-act="back" title="返回列表">✕</span></div>'
+      + '<div class="ldf-modal-header"><div class="ldf-modal-titles"><div class="ldf-modal-title">' + (r._idx == null ? '新建规则' : '编辑规则') + '</div><div class="ldf-modal-sub">配置匹配条件与作用范围</div></div><span class="ldf-close-icon" data-act="back" title="返回列表">✕</span></div>'
       + '<div class="ldf-edit-body">'
       + '<div class="ldf-field"><label>规则名</label><input type="text" id="ldf-name" value="' + escAttr(r.name || '') + '" placeholder="给规则起个名字"></div>'
       + '<div class="ldf-field"><label>规则类型</label>'
-      + '<div class="ldf-scope-row">'
-      + '<label><input type="radio" name="ldf-mode" value="filter"' + (mode === 'filter' ? ' checked' : '') + '> 过滤（隐藏匹配帖）</label>'
-      + '<label><input type="radio" name="ldf-mode" value="highlight"' + (mode === 'highlight' ? ' checked' : '') + '> 高亮（置顶+标记匹配帖）</label>'
+      + '<div class="ldf-segmented">'
+      + '<label class="ldf-seg"><input type="radio" name="ldf-mode" value="filter"' + (mode === 'filter' ? ' checked' : '') + '><span>过滤 · 隐藏匹配帖</span></label>'
+      + '<label class="ldf-seg"><input type="radio" name="ldf-mode" value="highlight"' + (mode === 'highlight' ? ' checked' : '') + '><span>高亮 · 置顶标记</span></label>'
       + '</div></div>'
       + '<div class="ldf-field"><label>作用域</label>'
-      + '<div class="ldf-scope-row"><label><input type="radio" name="ldf-scope" value="global"' + (scopeType === 'global' ? ' checked' : '') + '> 全局</label>'
-      + '<label><input type="radio" name="ldf-scope" value="home"' + (scopeType === 'home' ? ' checked' : '') + '> 仅首页流</label>'
-      + '<label><input type="radio" name="ldf-scope" value="category"' + (scopeType === 'category' ? ' checked' : '') + '> 类别页</label></div>'
+      + '<div class="ldf-segmented">'
+      + '<label class="ldf-seg"><input type="radio" name="ldf-scope" value="global"' + (scopeType === 'global' ? ' checked' : '') + '><span>全局</span></label>'
+      + '<label class="ldf-seg"><input type="radio" name="ldf-scope" value="home"' + (scopeType === 'home' ? ' checked' : '') + '><span>仅首页流</span></label>'
+      + '<label class="ldf-seg"><input type="radio" name="ldf-scope" value="category"' + (scopeType === 'category' ? ' checked' : '') + '><span>类别页</span></label>'
+      + '</div>'
       + '<div id="ldf-cat-tree" class="ldf-cat-tree" style="display:' + (scopeType === 'category' ? 'block' : 'none') + '">'
       + '<div class="ldf-cat-hint">勾选父类别自动含子孙（Lv1/2/3…）</div>'
       + catTree
@@ -782,18 +810,32 @@
       + '</div>'
       + '<div class="ldf-field"><label>匹配表达式 (DSL)</label>'
       + '<textarea id="ldf-expr" placeholder="例如：category(搞七捻三,0,1,2,3) AND (tag(纯水) OR tag(病友))">' + escHtml(r.expr || '') + '</textarea>'
-      + '<span id="ldf-expr-status" class="ldf-expr-status"></span></div>'
+      + '<span id="ldf-expr-status" class="ldf-expr-status"></span>'
+      + '<div class="ldf-expr-help">'
+      + '<div class="ldf-expr-help-title">语法说明</div>'
+      + '<div class="ldf-expr-help-grid">'
+      + '<code>category(名称[, 级别…])</code><span>匹配类别（含子孙；级别 0=父，1/2/3=Lv 子类）</span>'
+      + '<code>tag(标签1, 标签2, …)</code><span>匹配任一标签</span>'
+      + '<code>title(/正则/标志)</code><span>标题正则匹配</span>'
+      + '<code>title("文本")</code><span>标题包含文本</span>'
+      + '<code>A AND B</code><span>且</span>'
+      + '<code>A OR B</code><span>或</span>'
+      + '<code>NOT A</code><span>非</span>'
+      + '<code>( … )</code><span>分组，逗号分隔参数</span>'
+      + '</div>'
+      + '<div class="ldf-expr-help-eg">示例：<code>category(搞七捻三,0,1,2,3) AND (tag(纯水) OR tag(病友))</code></div>'
+      + '</div>'
+      + '</div>'
       + '<div class="ldf-field"><label>匹配预览</label>'
       + '<div class="ldf-preview">'
-      + '<input type="text" id="ldf-pv-title" placeholder="标题">'
-      + '<select id="ldf-pv-cat"><option value="">选择类别</option>' + catOptionsHtml() + '</select>'
+      + '<div class="ldf-preview-row"><input type="text" id="ldf-pv-title" placeholder="标题"><select id="ldf-pv-cat"><option value="">选择类别</option>' + catOptionsHtml() + '</select></div>'
       + '<input type="text" id="ldf-pv-tags" placeholder="标签（逗号分隔多个）">'
       + '<div id="ldf-pv-result" class="ldf-pv-result"></div>'
       + '</div></div>'
       + '</div>'
       + '<div class="ldf-modal-footer">'
       + '<div></div>'
-      + '<div><button id="ldf-draft" class="btn btn-default">存为草稿</button> &nbsp; <button id="ldf-save" class="btn btn-primary">保存</button></div>'
+      + '<div class="ldf-footer-btns"><button id="ldf-draft" class="ldf-btn-ghost">存为草稿</button><button id="ldf-save" class="btn btn-primary">保存</button></div>'
       + '</div>';
   }
 
@@ -971,7 +1013,15 @@
       '.ldf-highlight{background:rgba(255,176,0,.12)!important;border-left:3px solid #ffb000!important}',
       '.ldf-highlight:hover{background:rgba(255,176,0,.18)!important}',
       '.ldf-highlight .title{font-weight:600}',
+      // header group (gear + filtered button as one pill)
+      '#ldf-header-group{display:inline-flex;align-items:stretch;margin-left:6px;border:1px solid var(--primary-low,#ccc);border-radius:6px;background:var(--secondary,#fff);overflow:hidden;height:32px}',
+      '#ldf-settings-btn.ldf-icon-btn{display:inline-flex;align-items:center;justify-content:center;width:34px;padding:0;border:none;background:transparent;color:var(--primary-medium,#888);cursor:pointer;transition:background .15s,color .15s}',
+      '#ldf-settings-btn.ldf-icon-btn:hover{background:var(--primary-low,#eee);color:var(--primary,#222)}',
+      '#ldf-settings-btn.ldf-icon-btn svg{display:block}',
+      '#ldf-topbtn.ldf-count-btn{display:inline-flex;align-items:center;padding:0 12px;border:none;border-left:1px solid var(--primary-low,#ccc);background:transparent;color:var(--primary,#222);font-size:13px;white-space:nowrap;cursor:pointer;transition:background .15s}',
+      '#ldf-topbtn.ldf-count-btn:hover{background:var(--primary-low,#eee)}',
       '#ldf-topbtn .ldf-count{font-weight:600}',
+      // drawer
       '#ldf-drawer{position:fixed;inset:0;z-index:100001;pointer-events:none;contain:layout style}',
       '#ldf-drawer .ldf-drawer-overlay{position:absolute;inset:0;background:rgba(0,0,0,0);transition:background .2s;pointer-events:auto}',
       '#ldf-drawer .ldf-drawer-panel{position:absolute;top:0;right:0;height:100vh;width:440px;max-width:90vw;background:var(--secondary,#fff);color:var(--primary,#222);box-shadow:-4px 0 24px rgba(0,0,0,.2);transform:translateX(100%);transition:transform .2s;display:flex;flex-direction:column;overflow:hidden}',
@@ -990,53 +1040,92 @@
       '.ldf-item-cat{color:var(--tertiary,#08c);text-decoration:none}',
       '.ldf-tag{margin-right:4px}',
       '.ldf-item-stats{font-size:11px;color:var(--primary-low-mid,#aaa)}',
-      // modal
-      '#ldf-modal .ldf-modal-box{background:var(--secondary,#fff);color:var(--primary,#222);width:680px;max-width:100%;max-height:90vh;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.3);overflow:hidden;display:flex;flex-direction:column;font-family:inherit}',
+      // modal box
+      '#ldf-modal .ldf-modal-box{background:var(--secondary,#fff);color:var(--primary,#222);width:720px;max-width:100%;max-height:90vh;border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.3);overflow:hidden;display:flex;flex-direction:column;font-family:inherit}',
       '#ldf-modal .ldf-view{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}',
-      '#ldf-modal .ldf-modal-header{padding:14px 18px;border-bottom:1px solid var(--primary-low,#ddd);flex-shrink:0;display:flex;align-items:center;justify-content:space-between}',
-      '#ldf-modal .ldf-close-icon{cursor:pointer;font-size:18px;color:var(--primary-medium,#888);line-height:1;padding:2px 4px;user-select:none}',
-      '#ldf-modal .ldf-close-icon:hover{color:var(--primary,#222)}',
-      '#ldf-modal .ldf-modal-footer{padding:12px 18px;border-top:1px solid var(--primary-low,#ddd);display:flex;justify-content:space-between;align-items:center;flex-shrink:0}',
+      '#ldf-modal .ldf-modal-header{padding:16px 20px;border-bottom:1px solid var(--primary-low,#eee);flex-shrink:0;display:flex;align-items:center;justify-content:space-between}',
+      '#ldf-modal .ldf-modal-titles{display:flex;flex-direction:column;gap:1px}',
+      '#ldf-modal .ldf-modal-title{font-size:16px;font-weight:700}',
+      '#ldf-modal .ldf-modal-sub{font-size:12px;color:var(--primary-medium,#888)}',
+      '#ldf-modal .ldf-close-icon{cursor:pointer;font-size:18px;color:var(--primary-medium,#888);line-height:1;padding:4px 6px;border-radius:6px;user-select:none;transition:background .15s,color .15s}',
+      '#ldf-modal .ldf-close-icon:hover{color:var(--primary,#222);background:var(--primary-low,#eee)}',
+      '#ldf-modal .ldf-modal-footer{padding:12px 20px;border-top:1px solid var(--primary-low,#eee);display:flex;justify-content:space-between;align-items:center;flex-shrink:0}',
       '#ldf-modal .ldf-footer-hint{font-size:11px;color:var(--primary-medium,#888)}',
-      '#ldf-modal .ldf-list-toolbar{padding:10px 18px;display:flex;gap:8px;flex-shrink:0}',
-      '#ldf-modal .ldf-list-body{flex:1;overflow-y:auto;padding:0 18px}',
-      '#ldf-modal .ldf-empty{padding:30px;text-align:center;color:var(--primary-medium,#888)}',
-      '#ldf-modal .ldf-rule-row{display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--primary-low,#eee)}',
-      '#ldf-modal .ldf-rule-row.ldf-draft{opacity:.6}',
+      '#ldf-modal .ldf-footer-btns{display:flex;gap:8px}',
+      // list toolbar
+      '#ldf-modal .ldf-list-toolbar{padding:12px 20px;display:flex;align-items:center;gap:8px;flex-shrink:0;border-bottom:1px solid var(--primary-low,#f3f3f3)}',
+      '#ldf-modal .ldf-toolbar-spacer{flex:1}',
+      '#ldf-modal .ldf-btn-add{font-size:13px}',
+      '#ldf-modal .ldf-btn-ghost{font-size:12px;padding:5px 12px;cursor:pointer;border:1px solid var(--primary-low,#ccc);background:transparent;border-radius:5px;color:var(--primary,#222);transition:background .15s,border-color .15s}',
+      '#ldf-modal .ldf-btn-ghost:hover{background:var(--primary-low,#f3f3f3);border-color:var(--primary-low-mid,#bbb)}',
+      // list body
+      '#ldf-modal .ldf-list-body{flex:1;overflow-y:auto;padding:8px 20px 12px}',
+      '#ldf-modal .ldf-empty{padding:48px 20px;text-align:center;color:var(--primary-medium,#888)}',
+      '#ldf-modal .ldf-empty-icon{font-size:30px;opacity:.4;margin-bottom:8px}',
+      '#ldf-modal .ldf-empty-text{font-size:15px;font-weight:600;margin-bottom:4px}',
+      '#ldf-modal .ldf-empty-sub{font-size:12px}',
+      // rule row (card)
+      '#ldf-modal .ldf-rule-row{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--primary-low,#eee);border-radius:8px;margin-bottom:8px;transition:border-color .15s,box-shadow .15s}',
+      '#ldf-modal .ldf-rule-row:hover{border-color:var(--primary-low-mid,#ddd);box-shadow:0 1px 4px rgba(0,0,0,.04)}',
+      '#ldf-modal .ldf-rule-row.ldf-draft{opacity:.62}',
       '#ldf-modal .ldf-rule-info{flex:1;min-width:0}',
-      '#ldf-modal .ldf-rule-name{font-weight:600;font-size:14px;margin-bottom:2px}',
-      '#ldf-modal .ldf-tag-draft{font-size:11px;background:var(--primary-low,#ddd);color:var(--primary-medium,#888);padding:1px 6px;border-radius:3px;margin-left:4px}',
-      '#ldf-modal .ldf-tag-highlight{font-size:11px;background:rgba(255,176,0,.2);color:#b07000;padding:1px 6px;border-radius:3px;margin-right:4px}',
-      '#ldf-modal .ldf-tag-filter{font-size:11px;background:rgba(208,44,37,.15);color:#d12c25;padding:1px 6px;border-radius:3px;margin-right:4px}',
-      '#ldf-modal .ldf-rule-meta{font-size:12px;color:var(--primary-medium,#888);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-      '#ldf-modal .ldf-rule-expr{font-family:monospace}',
-      '#ldf-modal .ldf-rule-actions{display:flex;gap:4px;flex-shrink:0}',
-      '#ldf-modal .ldf-rule-actions button{font-size:12px;padding:3px 10px;cursor:pointer;border:1px solid var(--primary-low,#ccc);background:transparent;border-radius:3px;color:var(--primary,#222)}',
+      '#ldf-modal .ldf-rule-name{font-size:14px;margin-bottom:5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}',
+      '#ldf-modal .ldf-rule-title{font-weight:600}',
+      '#ldf-modal .ldf-tag-draft{font-size:10px;background:var(--primary-low,#ddd);color:var(--primary-medium,#888);padding:1px 6px;border-radius:10px}',
+      '#ldf-modal .ldf-tag-highlight{font-size:10px;background:rgba(255,176,0,.2);color:#b07000;padding:1px 6px;border-radius:10px}',
+      '#ldf-modal .ldf-tag-filter{font-size:10px;background:rgba(208,44,37,.15);color:#d12c25;padding:1px 6px;border-radius:10px}',
+      '#ldf-modal .ldf-rule-meta{font-size:12px;color:var(--primary-medium,#888);display:flex;align-items:center;gap:8px;min-width:0}',
+      '#ldf-modal .ldf-scope-chip{font-size:11px;background:var(--primary-low,#f0f0f0);color:var(--primary-medium,#666);padding:2px 8px;border-radius:10px;white-space:nowrap;flex-shrink:0}',
+      '#ldf-modal .ldf-rule-expr{font-family:monospace;font-size:11px;background:var(--primary-very-low,#fafafa);padding:2px 6px;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}',
+      '#ldf-modal .ldf-rule-actions{display:flex;gap:6px;flex-shrink:0}',
+      '#ldf-modal .ldf-rule-actions button{font-size:12px;padding:4px 12px;cursor:pointer;border:1px solid var(--primary-low,#ccc);background:transparent;border-radius:5px;color:var(--primary,#222);transition:background .15s,border-color .15s,color .15s}',
+      '#ldf-modal .ldf-rule-actions .ldf-btn-edit:hover{background:var(--tertiary-low,#e6f3fb);border-color:var(--tertiary,#08c);color:var(--tertiary,#08c)}',
+      '#ldf-modal .ldf-rule-actions .ldf-btn-del:hover{background:rgba(208,44,37,.1);border-color:#d12c25;color:#d12c25}',
       // switch
       '#ldf-modal .ldf-switch{position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0}',
       '#ldf-modal .ldf-switch input{opacity:0;width:0;height:0}',
       '#ldf-modal .ldf-slider{position:absolute;cursor:pointer;inset:0;background:var(--primary-low,#ccc);border-radius:20px;transition:.2s}',
-      '#ldf-modal .ldf-slider:before{content:"";position:absolute;height:16px;width:16px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s}',
+      '#ldf-modal .ldf-slider:before{content:"";position:absolute;height:16px;width:16px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.2)}',
       '#ldf-modal .ldf-switch input:checked + .ldf-slider{background:var(--tertiary,#08c)}',
       '#ldf-modal .ldf-switch input:checked + .ldf-slider:before{transform:translateX(16px)}',
+      // segmented control
+      '#ldf-modal .ldf-segmented{display:inline-flex}',
+      '#ldf-modal .ldf-seg{position:relative;display:flex;align-items:stretch;cursor:pointer}',
+      '#ldf-modal .ldf-seg input{position:absolute;opacity:0;width:0;height:0;margin:0}',
+      '#ldf-modal .ldf-seg span{display:flex;align-items:center;padding:7px 14px;font-size:13px;color:var(--primary-medium,#888);border-right:1px solid var(--primary-low,#ccc);transition:background .15s,color .15s;white-space:nowrap}',
+      '#ldf-modal .ldf-seg:last-child span{border-right:none}',
+      '#ldf-modal .ldf-seg span:hover{background:var(--primary-low,#f3f3f3)}',
+      '#ldf-modal .ldf-seg input:checked + span{background:var(--tertiary,#08c);color:#fff}',
       // edit form
-      '#ldf-modal .ldf-edit-body{flex:1;overflow-y:auto;padding:14px 18px}',
-      '#ldf-modal .ldf-field{margin-bottom:14px}',
-      '#ldf-modal .ldf-field > label{display:block;font-weight:600;font-size:13px;margin-bottom:4px}',
-      '#ldf-modal .ldf-field input[type=text],#ldf-modal .ldf-field textarea,#ldf-modal .ldf-field select{width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--primary-low,#ccc);border-radius:4px;font-size:13px;background:var(--secondary,#fff);color:var(--primary,#222)}',
-      '#ldf-modal .ldf-field textarea{font-family:monospace;min-height:60px;resize:vertical}',
-      '#ldf-modal .ldf-expr-status{font-size:12px;display:inline-block;margin-top:4px}',
+      '#ldf-modal .ldf-edit-body{flex:1;overflow-y:auto;padding:16px 20px}',
+      '#ldf-modal .ldf-field{margin-bottom:18px}',
+      '#ldf-modal .ldf-field > label{display:block;font-weight:600;font-size:13px;margin-bottom:6px}',
+      '#ldf-modal .ldf-field input[type=text],#ldf-modal .ldf-field textarea,#ldf-modal .ldf-field select{width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--primary-low,#ccc);border-radius:6px;font-size:13px;background:var(--secondary,#fff);color:var(--primary,#222);transition:border-color .15s}',
+      '#ldf-modal .ldf-field input[type=text]:focus,#ldf-modal .ldf-field textarea:focus,#ldf-modal .ldf-field select:focus{outline:none;border-color:var(--tertiary,#08c)}',
+      '#ldf-modal .ldf-field textarea{font-family:monospace;min-height:72px;resize:vertical;line-height:1.5}',
+      '#ldf-modal .ldf-expr-status{font-size:12px;display:inline-block;margin-top:6px}',
       '#ldf-modal .ldf-status-ok{color:#2a9d4a}#ldf-modal .ldf-status-err{color:#d12c25}#ldf-modal .ldf-status-empty{color:var(--primary-medium,#888)}',
-      '#ldf-modal .ldf-scope-row{display:flex;gap:16px}',
-      '#ldf-modal .ldf-scope-row label{font-weight:normal;font-size:13px;cursor:pointer}',
-      '#ldf-modal .ldf-cat-tree{margin-top:8px;padding:10px;border:1px solid var(--primary-low,#eee);border-radius:4px;max-height:240px;overflow-y:auto}',
-      '#ldf-modal .ldf-cat-hint{font-size:11px;color:var(--primary-medium,#888);margin-bottom:6px}',
+      // DSL syntax help
+      '#ldf-modal .ldf-expr-help{margin-top:8px;padding:10px 12px;background:var(--primary-very-low,#fafafa);border:1px solid var(--primary-low,#eee);border-radius:6px;font-size:12px;color:var(--primary-medium,#888)}',
+      '#ldf-modal .ldf-expr-help-title{font-weight:600;color:var(--primary,#222);margin-bottom:6px}',
+      '#ldf-modal .ldf-expr-help-grid{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;align-items:baseline}',
+      '#ldf-modal .ldf-expr-help-grid code{font-family:monospace;font-size:11px;background:var(--primary-low,#eee);padding:1px 6px;border-radius:4px;color:var(--primary,#333);white-space:nowrap}',
+      '#ldf-modal .ldf-expr-help-eg{margin-top:8px;padding-top:8px;border-top:1px dashed var(--primary-low,#eee);color:var(--primary-medium,#888)}',
+      '#ldf-modal .ldf-expr-help-eg code{font-family:monospace;font-size:11px;color:var(--tertiary,#08c)}',
+      // category tree
+      '#ldf-modal .ldf-cat-tree{margin-top:10px;padding:12px;border:1px solid var(--primary-low,#eee);border-radius:7px;max-height:240px;overflow-y:auto;background:var(--primary-very-low,#fafafa)}',
+      '#ldf-modal .ldf-cat-hint{font-size:11px;color:var(--primary-medium,#888);margin-bottom:8px}',
       '#ldf-modal .ldf-cat-list{display:flex;flex-wrap:wrap;gap:6px 14px}',
       '#ldf-modal .ldf-cat-item{font-size:13px;cursor:pointer;white-space:nowrap}',
-      '#ldf-modal .ldf-include-home{display:block;margin-top:8px;font-size:13px;cursor:pointer}',
-      '#ldf-modal .ldf-preview{border:1px solid var(--primary-low,#eee);border-radius:4px;padding:10px}',
+      '#ldf-modal .ldf-include-home{display:block;margin-top:10px;padding-top:8px;border-top:1px solid var(--primary-low,#eee);font-size:13px;cursor:pointer}',
+      // preview
+      '#ldf-modal .ldf-preview{border:1px solid var(--primary-low,#eee);border-radius:7px;padding:12px;background:var(--primary-very-low,#fafafa)}',
+      '#ldf-modal .ldf-preview-row{display:flex;gap:8px;margin-bottom:6px}',
       '#ldf-modal .ldf-preview input,#ldf-modal .ldf-preview select{margin-bottom:6px}',
-      '#ldf-modal .ldf-pv-result{font-size:13px;padding:6px 0}',
+      '#ldf-modal .ldf-preview-row input,#ldf-modal .ldf-preview-row select{margin-bottom:0}',
+      '#ldf-modal .ldf-preview-row input{flex:1;min-width:0}',
+      '#ldf-modal .ldf-preview-row select{width:auto;flex:0 1 220px}',
+      '#ldf-modal .ldf-pv-result{font-size:13px;padding:8px 0 2px}',
       '#ldf-modal .ldf-pv-hit{color:#d12c25}#ldf-modal .ldf-pv-miss{color:#2a9d4a}#ldf-modal .ldf-pv-err{color:#d12c25}#ldf-modal .ldf-pv-idle{color:var(--primary-medium,#888)}#ldf-modal .ldf-pv-hl{color:#b07000}'
     ].join('\n');
     document.head.appendChild(css);
