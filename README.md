@@ -2,11 +2,20 @@
 
 [linux.do](https://linux.do/) 主题帖高级过滤器 —— 按**类别 / 标签 / 标题**过滤或高亮帖子列表。
 
+<img width="1884" height="668" alt="image" src="https://github.com/user-attachments/assets/99680414-cf4a-41e0-91a6-3154ff03139e" />
+
+高亮及过滤：
+
+<img width="1894" height="589" alt="image" src="https://github.com/user-attachments/assets/a9cfc416-a4df-44ed-9aea-9ea96541ec4a" />
+
+
+
+
 ## 安装
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 等用户脚本管理器
 2. 打开 [linuxdo-filter.user.js](linuxdo-filter.user.js)，点 Raw 后按提示安装
-3. 打开 linux.do，通过 **设置** 管理规则
+3. 通过油猴菜单中的 **菜单设置** 或 页面右上角的设置管理规则
 
 ## 功能
 
