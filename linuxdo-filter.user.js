@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 高级过滤器
 // @namespace    https://linux.do/
-// @version      1.3.5
+// @version      1.3.6
 // @description  按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。
 // @author       you
 // @match        https://linux.do/*
@@ -260,6 +260,7 @@
         var f1 = (/[\?&]order=([a-z]+)/i.exec(url.search) || [])[1] || 'latest';
         return { kind: 'category', categoryId: cid1, filter: f1.toLowerCase(), key: 'cat:' + cid1 + ':' + f1.toLowerCase() };
       }
+      if (url.pathname === '/' || url.pathname === '') return { kind: 'home', route: 'latest', key: 'home:latest' };
       var hm = new RegExp('^/(' + HOME_ROUTES.join('|') + ')(\\.json)?(/.*)?$', 'i').exec(url.pathname);
       if (hm) return { kind: 'home', route: hm[1].toLowerCase(), key: 'home:' + hm[1].toLowerCase() };
       // /c/{slug}/{id} 或 /c/{slug}/{sub}/{id}，可能有 /l/{filter}
