@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         LinuxDo 主题过滤器
+// @name         LinuxDo 高级过滤器
 // @namespace    https://linux.do/
-// @version      0.3.0
+// @version      1.3.5
 // @description  按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。
 // @author       you
 // @match        https://linux.do/*
@@ -32,10 +32,10 @@
   };
 
   // ───────────────────────── 小工具 ─────────────────────────
-  function log() { try { console.log.apply(console, ['%c[LDF]', 'color:#3aa'].concat([].slice.call(arguments))); } catch (e) {} }
-  function err() { try { console.error.apply(console, ['%c[LDF]', 'color:#e55'].concat([].slice.call(arguments))); } catch (e) {} }
+  function log() { try { if (state.currentPage && state.currentPage.kind === 'other') return; console.log.apply(console, ['%c[LDF]', 'color:#3aa'].concat([].slice.call(arguments))); } catch (e) { } }
+  function err() { try { console.error.apply(console, ['%c[LDF]', 'color:#e55'].concat([].slice.call(arguments))); } catch (e) { } }
   function gmGet(key, def) { try { var v = GM_getValue(key, def); return (v === undefined || v === null) ? def : v; } catch (e) { return def; } }
-  function gmSet(key, val) { try { GM_setValue(key, val); } catch (e) {} }
+  function gmSet(key, val) { try { GM_setValue(key, val); } catch (e) { } }
   function escHtml(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function escAttr(s) { return escHtml(s); }
 
@@ -325,7 +325,7 @@
     if (!state.highlightPredicates.length) return false;
     for (var i = 0; i < state.highlightPredicates.length; i++) {
       if (!ruleAppliesToPage(state.highlightPredicates[i], pg)) continue;
-      try { if (state.highlightPredicates[i].fn(topic)) return true; } catch (e) {}
+      try { if (state.highlightPredicates[i].fn(topic)) return true; } catch (e) { }
     }
     return false;
   }
@@ -336,7 +336,7 @@
     if (!state.filterPredicates.length) return false;
     for (var i = 0; i < state.filterPredicates.length; i++) {
       if (!ruleAppliesToPage(state.filterPredicates[i], pg)) continue;
-      try { if (state.filterPredicates[i].fn(topic)) return true; } catch (e) {}
+      try { if (state.filterPredicates[i].fn(topic)) return true; } catch (e) { }
     }
     return false;
   }
@@ -473,7 +473,7 @@
             if (descResp) Object.defineProperty(xhr, 'response', {
               get: function () { if (xhr.responseType === '' || xhr.responseType === 'text') return xhr.responseText; return descResp.get.call(xhr); }
             });
-          } catch (e) {}
+          } catch (e) { }
         };
         xhr.addEventListener('readystatechange', function () { if (xhr.readyState === 4) install(); });
       }
@@ -489,7 +489,7 @@
     if (!text || text.indexOf('"topic_list"') === -1) return;
     try {
       var outer = JSON.parse(text);
-      if (outer.site && typeof outer.site === 'string') { try { ensureCatMapFromSite(JSON.parse(outer.site)); } catch (e) {} }
+      if (outer.site && typeof outer.site === 'string') { try { ensureCatMapFromSite(JSON.parse(outer.site)); } catch (e) { } }
       else if (outer.site && typeof outer.site === 'object') { ensureCatMapFromSite(outer.site); }
       reloadRules();
       var firstPg = pageContext(location.href);
@@ -526,6 +526,7 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     if (!preloadedRewritten) { var s = document.querySelector('script#data-preloaded'); if (s) rewritePreloaded(s); }
+    if (preObs) preObs.disconnect();
     if (!state.catMap) ensureCatMapFallback().then(reloadRules);
     syncCurrentPage();
     bootUI();
@@ -571,38 +572,42 @@
 
   function ensureTopBtn() {
     var cont = document.querySelector('.header-buttons, .d-header .icons, ul.d-header-icons');
-    if (!cont) return;
-    if (ui.group && ui.group.parentNode === cont) { updateCount(); return; }
-    if (document.querySelector('#ldf-header-group')) {
-      ui.group = document.querySelector('#ldf-header-group');
-      ui.topBtn = document.querySelector('#ldf-topbtn');
-      updateCount();
+    if (!cont || !state.currentPage || !isFilterablePage(state.currentPage)) {
+      if (ui.group && ui.group.parentNode) ui.group.parentNode.removeChild(ui.group);
       return;
     }
-    var group = document.createElement('div');
-    group.id = 'ldf-header-group';
+    if (ui.group && ui.group.parentNode === cont) { updateCount(); return; }
+    if (!ui.group) {
+      if (document.querySelector('#ldf-header-group')) {
+        ui.group = document.querySelector('#ldf-header-group');
+        ui.topBtn = document.querySelector('#ldf-topbtn');
+      } else {
+        var group = document.createElement('div');
+        group.id = 'ldf-header-group';
 
-    var gear = document.createElement('button');
-    gear.id = 'ldf-settings-btn';
-    gear.type = 'button';
-    gear.className = 'ldf-icon-btn';
-    gear.title = '过滤器设置';
-    gear.setAttribute('aria-label', '过滤器设置');
-    gear.innerHTML = SETTINGS_SVG;
-    gear.addEventListener('click', function () { openModal(); });
+        var gear = document.createElement('button');
+        gear.id = 'ldf-settings-btn';
+        gear.type = 'button';
+        gear.className = 'ldf-icon-btn';
+        gear.title = '过滤器设置';
+        gear.setAttribute('aria-label', '过滤器设置');
+        gear.innerHTML = SETTINGS_SVG;
+        gear.addEventListener('click', function () { openModal(); });
 
-    var btn = document.createElement('button');
-    btn.id = 'ldf-topbtn';
-    btn.type = 'button';
-    btn.className = 'ldf-count-btn';
-    btn.innerHTML = '<span class="ldf-count">已过滤 (0)</span>';
-    btn.addEventListener('click', function () { toggleDrawer(); });
+        var btn = document.createElement('button');
+        btn.id = 'ldf-topbtn';
+        btn.type = 'button';
+        btn.className = 'ldf-count-btn';
+        btn.innerHTML = '<span class="ldf-count">已过滤 (0)</span>';
+        btn.addEventListener('click', function () { toggleDrawer(); });
 
-    group.appendChild(gear);
-    group.appendChild(btn);
-    cont.appendChild(group);
-    ui.group = group;
-    ui.topBtn = btn;
+        group.appendChild(gear);
+        group.appendChild(btn);
+        ui.group = group;
+        ui.topBtn = btn;
+      }
+    }
+    cont.appendChild(ui.group);
     updateCount();
   }
 
@@ -656,8 +661,9 @@
   }
   function updateCount() {
     var n = bucketCount();
-    if (ui.topBtn) { var span = ui.topBtn.querySelector('.ldf-count'); if (span) span.textContent = '已过滤 (' + n + ')'; }
-    if (ui.drawer) { var c = ui.drawer.querySelector('.ldf-drawer-count'); if (c) c.textContent = n; }
+    var txt = '已过滤 (' + n + ')';
+    if (ui.topBtn) { var span = ui.topBtn.querySelector('.ldf-count'); if (span && span.textContent !== txt) span.textContent = txt; }
+    if (ui.drawer) { var c = ui.drawer.querySelector('.ldf-drawer-count'); if (c && c.textContent !== String(n)) c.textContent = n; }
   }
 
   // ───────────────────────── UI：设置弹窗（列表 + 编辑两视图） ─────────────────────────
@@ -723,13 +729,13 @@
           + '</div>'
           + '<div class="ldf-rule-actions">'
           + '<button class="ldf-btn-edit" data-idx="' + idx + '">编辑</button>'
-          + '<button class="ldf-btn-del" data-idx="' + idx + '">删</button>'
+          + '<button class="ldf-btn-del" data-idx="' + idx + '">删除</button>'
           + '</div>'
           + '</div>';
       });
     }
     box.innerHTML =
-      '<div class="ldf-modal-header"><div class="ldf-modal-titles"><div class="ldf-modal-title">主题过滤器</div><div class="ldf-modal-sub">管理过滤 / 高亮规则</div></div><span class="ldf-close-icon" data-act="close" title="关闭">✕</span></div>'
+      '<div class="ldf-modal-header"><div class="ldf-modal-titles"><div class="ldf-modal-title">高级过滤器</div><div class="ldf-modal-sub">管理过滤 / 高亮规则</div></div><span class="ldf-close-icon" data-act="close" title="关闭">✕</span></div>'
       + '<div class="ldf-list-toolbar">'
       + '<button id="ldf-add" class="btn btn-primary ldf-btn-add">+ 新建规则</button>'
       + '<span class="ldf-toolbar-spacer"></span>'
@@ -793,8 +799,8 @@
       + '<div class="ldf-field"><label>规则名</label><input type="text" id="ldf-name" value="' + escAttr(r.name || '') + '" placeholder="给规则起个名字"></div>'
       + '<div class="ldf-field"><label>规则类型</label>'
       + '<div class="ldf-segmented">'
-      + '<label class="ldf-seg"><input type="radio" name="ldf-mode" value="filter"' + (mode === 'filter' ? ' checked' : '') + '><span>过滤 · 隐藏匹配帖</span></label>'
-      + '<label class="ldf-seg"><input type="radio" name="ldf-mode" value="highlight"' + (mode === 'highlight' ? ' checked' : '') + '><span>高亮 · 置顶标记</span></label>'
+      + '<label class="ldf-seg"><input type="radio" name="ldf-mode" value="filter"' + (mode === 'filter' ? ' checked' : '') + '><span>过滤</span></label>'
+      + '<label class="ldf-seg"><input type="radio" name="ldf-mode" value="highlight"' + (mode === 'highlight' ? ' checked' : '') + '><span>高亮</span></label>'
       + '</div></div>'
       + '<div class="ldf-field"><label>作用域</label>'
       + '<div class="ldf-segmented">'
@@ -814,16 +820,13 @@
       + '<div class="ldf-expr-help">'
       + '<div class="ldf-expr-help-title">语法说明</div>'
       + '<div class="ldf-expr-help-grid">'
-      + '<code>category(名称[, 级别…])</code><span>匹配类别（含子孙；级别 0=父，1/2/3=Lv 子类）</span>'
+      + '<code>s1 AND (s2 OR s3) AND NOT s4</code><span>且/或/非，支持分组</span>'
+      + '<code>category(名称[, 级别…])</code><span>匹配类别（级别：0/1/2/3，省略代表全部）</span>'
       + '<code>tag(标签1, 标签2, …)</code><span>匹配任一标签</span>'
-      + '<code>title(/正则/标志)</code><span>标题正则匹配</span>'
       + '<code>title("文本")</code><span>标题包含文本</span>'
-      + '<code>A AND B</code><span>且</span>'
-      + '<code>A OR B</code><span>或</span>'
-      + '<code>NOT A</code><span>非</span>'
-      + '<code>( … )</code><span>分组，逗号分隔参数</span>'
+      + '<code>title(/正则/标志)</code><span>标题正则匹配</span>'
       + '</div>'
-      + '<div class="ldf-expr-help-eg">示例：<code>category(搞七捻三,0,1,2,3) AND (tag(纯水) OR tag(病友))</code></div>'
+      + '<div class="ldf-expr-help-eg"><div>复杂示例：匹配所有0/1级搞七捻三的帖子，或标签带有纯水且同时带有病友或树洞的帖子，但如果标题含有开源则忽略</div><code>(category(搞七捻三,0,1) OR tag(纯水) AND tag(病友,树洞)) AND NOT title(开源)</code></div>'
       + '</div>'
       + '</div>'
       + '<div class="ldf-field"><label>匹配预览</label>'
@@ -1014,13 +1017,12 @@
       '.ldf-highlight:hover{background:rgba(255,176,0,.18)!important}',
       '.ldf-highlight .title{font-weight:600}',
       // header group (gear + filtered button as one pill)
-      '#ldf-header-group{display:inline-flex;align-items:stretch;margin-left:6px;border:1px solid var(--primary-low,#ccc);border-radius:6px;background:var(--secondary,#fff);overflow:hidden;height:32px}',
+      '#ldf-header-group{display:inline-flex;align-items:stretch;margin-left:6px;border:1px solid var(--primary-low,#ccc);border-radius:6px;background:var(--secondary,#fff);overflow:hidden;height:28px}',
       '#ldf-settings-btn.ldf-icon-btn{display:inline-flex;align-items:center;justify-content:center;width:34px;padding:0;border:none;background:transparent;color:var(--primary-medium,#888);cursor:pointer;transition:background .15s,color .15s}',
       '#ldf-settings-btn.ldf-icon-btn:hover{background:var(--primary-low,#eee);color:var(--primary,#222)}',
       '#ldf-settings-btn.ldf-icon-btn svg{display:block}',
       '#ldf-topbtn.ldf-count-btn{display:inline-flex;align-items:center;padding:0 12px;border:none;border-left:1px solid var(--primary-low,#ccc);background:transparent;color:var(--primary,#222);font-size:13px;white-space:nowrap;cursor:pointer;transition:background .15s}',
       '#ldf-topbtn.ldf-count-btn:hover{background:var(--primary-low,#eee)}',
-      '#ldf-topbtn .ldf-count{font-weight:600}',
       // drawer
       '#ldf-drawer{position:fixed;inset:0;z-index:100001;pointer-events:none;contain:layout style}',
       '#ldf-drawer .ldf-drawer-overlay{position:absolute;inset:0;background:rgba(0,0,0,0);transition:background .2s;pointer-events:auto}',
@@ -1092,7 +1094,7 @@
       '#ldf-modal .ldf-segmented{display:inline-flex}',
       '#ldf-modal .ldf-seg{position:relative;display:flex;align-items:stretch;cursor:pointer}',
       '#ldf-modal .ldf-seg input{position:absolute;opacity:0;width:0;height:0;margin:0}',
-      '#ldf-modal .ldf-seg span{display:flex;align-items:center;padding:7px 14px;font-size:13px;color:var(--primary-medium,#888);border-right:1px solid var(--primary-low,#ccc);transition:background .15s,color .15s;white-space:nowrap}',
+      '#ldf-modal .ldf-seg span{display:flex;align-items:center;padding:4px 8px;font-size:12px;color:var(--primary-medium,#888);border-right:1px solid var(--primary-low,#ccc);transition:background .15s,color .15s;white-space:nowrap}',
       '#ldf-modal .ldf-seg:last-child span{border-right:none}',
       '#ldf-modal .ldf-seg span:hover{background:var(--primary-low,#f3f3f3)}',
       '#ldf-modal .ldf-seg input:checked + span{background:var(--tertiary,#08c);color:#fff}',
@@ -1111,7 +1113,7 @@
       '#ldf-modal .ldf-expr-help-grid{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;align-items:baseline}',
       '#ldf-modal .ldf-expr-help-grid code{font-family:monospace;font-size:11px;background:var(--primary-low,#eee);padding:1px 6px;border-radius:4px;color:var(--primary,#333);white-space:nowrap}',
       '#ldf-modal .ldf-expr-help-eg{margin-top:8px;padding-top:8px;border-top:1px dashed var(--primary-low,#eee);color:var(--primary-medium,#888)}',
-      '#ldf-modal .ldf-expr-help-eg code{font-family:monospace;font-size:11px;color:var(--tertiary,#08c)}',
+      '#ldf-modal .ldf-expr-help-eg code{display:inline-block;margin-top:4px;font-family:monospace;font-size:11px;color:var(--tertiary,#08c)}',
       // category tree
       '#ldf-modal .ldf-cat-tree{margin-top:10px;padding:12px;border:1px solid var(--primary-low,#eee);border-radius:7px;max-height:240px;overflow-y:auto;background:var(--primary-very-low,#fafafa)}',
       '#ldf-modal .ldf-cat-hint{font-size:11px;color:var(--primary-medium,#888);margin-bottom:8px}',
@@ -1169,9 +1171,9 @@
       mo.observe(document.body, { childList: true, subtree: true });
     } catch (e) { err('UI MO 安装失败', e); }
 
-    try { GM_registerMenuCommand('LinuxDo 过滤器 · 设置', openModal); } catch (e) {}
+    try { GM_registerMenuCommand('设置', openModal); } catch (e) { }
   }
 
-  try { window.__LDF = { state: state, parseDSL: parseDSL, reloadRules: reloadRules, pageContext: pageContext, ruleAppliesToPage: ruleAppliesToPage, isHighlighted: isHighlighted, isFiltered: isFiltered, splitTopics: splitTopics }; } catch (e) {}
+  try { window.__LDF = { state: state, parseDSL: parseDSL, reloadRules: reloadRules, pageContext: pageContext, ruleAppliesToPage: ruleAppliesToPage, isHighlighted: isHighlighted, isFiltered: isFiltered, splitTopics: splitTopics }; } catch (e) { }
 
 })();
