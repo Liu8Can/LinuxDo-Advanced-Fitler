@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         LinuxDo 高级过滤器
 // @namespace    https://linux.do/
-// @version      1.4.1
-// @description  按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、规则优先级(可调)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。
+// @version      1.5.0
+// @description  按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、规则优先级(可调)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。高亮规则独立配色，规则列表支持全规则匹配预览。
 // @author       you
 // @match        https://linux.do/*
 // @run-at       document-start
@@ -16,8 +16,9 @@
 
   // ───────────────────────── 常量 ─────────────────────────
   var BUCKET_MAX = 1000;
-  var RULES_KEY = 'ldf_rules_v2';        // [{name, status:'active'|'draft', expr, scope:{type,...}}]
+  var RULES_KEY = 'ldf_rules_v2';        // [{name, mode:'filter'|'highlight', status:'active'|'draft', expr, color?, scope:{type,...}}]
   var HOME_ROUTES = ['latest', 'new', 'unseen', 'hot', 'top', 'read'];
+  var HL_PALETTE = ['#ffb000', '#1971c2', '#2f9e44', '#e03131', '#9c36b5', '#f76707', '#0c8599', '#66a80f']; // 高亮自动配色（首色为原琥珀色）
 
   // ───────────────────────── 状态 ─────────────────────────
   var state = {
@@ -26,8 +27,8 @@
     buckets: {},           // pageKey -> { map:Map(id->topic), order:[id] }
     rules: [],             // 全部规则原始对象（落库形态）
     filterPredicates: [],    // [{name, fn, scope}] 已编译且 active 的过滤谓词
-    highlightPredicates: [], // [{name, fn, scope}] 已编译且 active 的高亮谓词
-    pageHighlights: {},      // pageKey -> Set(topicId) 当前页高亮的帖 id
+    highlightPredicates: [], // [{name, fn, scope, color}] 已编译且 active 的高亮谓词
+    pageHighlights: {},      // pageKey -> Map(topicId -> color) 当前页高亮的帖 id 与颜色
     currentPage: null,     // { kind:'home'|'category'|'other', route?, categoryId?, key }
   };
 
@@ -38,6 +39,11 @@
   function gmSet(key, val) { try { GM_setValue(key, val); } catch (e) { } }
   function escHtml(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function escAttr(s) { return escHtml(s); }
+  // 高亮规则生效色：显式 color 合法（#rrggbb，导入数据不可信需校验）则用之，否则按调色板序号自动分配
+  function hlColorFor(r, hlIndex) {
+    if (r && typeof r.color === 'string' && /^#[0-9a-f]{6}$/i.test(r.color)) return r.color;
+    return HL_PALETTE[hlIndex % HL_PALETTE.length];
+  }
 
   // ───────────────────────── 类别映射 ─────────────────────────
   function buildCatMap(categories) {
@@ -308,14 +314,18 @@
     state.rules = raw;
     state.filterPredicates = [];
     state.highlightPredicates = [];
+    var hlIdx = 0;
     raw.forEach(function (r) {
+      // 高亮序号对草稿也计数：切换启用状态时各规则颜色保持不变
+      var hlColor = null;
+      if (r.mode === 'highlight') { hlColor = hlColorFor(r, hlIdx); hlIdx++; }
       if (r.status !== 'active') return;
       try {
         var ast = parseDSL(r.expr || '');
         if (!state.catMap) ensureCatMapFallback();
         var fn = compile(ast);
         var entry = { name: r.name, fn: fn, scope: r.scope || { type: 'global' } };
-        if (r.mode === 'highlight') state.highlightPredicates.push(entry);
+        if (r.mode === 'highlight') { entry.color = hlColor; state.highlightPredicates.push(entry); }
         else state.filterPredicates.push(entry);
       } catch (e) { /* 编译错误静默，编辑器会显示 */ }
     });
@@ -386,17 +396,17 @@
 
   // ───────────────────────── 核心：切分 highlighted/kept/filtered ─────────────────────────
   function splitTopics(topics, pg) {
-    var highlighted = [], kept = [], filtered = [], hlIds = new Set();
+    var highlighted = [], kept = [], filtered = [], hlColors = new Map();
     (topics || []).forEach(function (t) {
       var rank = highlightRank(t, pg);
-      if (rank >= 0) { t.__ldfRank = rank; highlighted.push(t); hlIds.add(t.id); }
+      if (rank >= 0) { t.__ldfRank = rank; highlighted.push(t); hlColors.set(t.id, state.highlightPredicates[rank].color); }
       else if (isFiltered(t, pg)) filtered.push(t);
       else kept.push(t);
     });
     // 高亮区块按规则优先级排序（rank 小在前），同级保持原顺序（sort 稳定）
     highlighted.sort(function (a, b) { return a.__ldfRank - b.__ldfRank; });
     highlighted.forEach(function (t) { delete t.__ldfRank; });
-    return { kept: kept, filtered: filtered, highlighted: highlighted, hlIds: hlIds };
+    return { kept: kept, filtered: filtered, highlighted: highlighted, hlColors: hlColors };
   }
   function processTopicList(pg, obj) {
     if (!obj || !obj.topic_list || !Array.isArray(obj.topic_list.topics)) return null;
@@ -404,10 +414,10 @@
     if (sp.filtered.length) bucketAddMany(pg.key, sp.filtered);
     // 高亮帖排到数组前部 → Ember 自然渲染到列表顶部
     obj.topic_list.topics = sp.highlighted.concat(sp.kept);
-    // 记录当前页高亮 id（供 DOM 样式用）
-    if (sp.hlIds.size) {
-      if (!state.pageHighlights[pg.key]) state.pageHighlights[pg.key] = new Set();
-      sp.hlIds.forEach(function (id) { state.pageHighlights[pg.key].add(id); });
+    // 记录当前页高亮 id 与颜色（供 DOM 样式用）
+    if (sp.hlColors.size) {
+      if (!state.pageHighlights[pg.key]) state.pageHighlights[pg.key] = new Map();
+      sp.hlColors.forEach(function (color, id) { state.pageHighlights[pg.key].set(id, color); });
     }
     return sp;
   }
@@ -565,13 +575,15 @@
   // 给渲染后的高亮帖 <tr> 加样式 class
   function tryApplyHighlights() {
     if (!state.currentPage) return;
-    var hlSet = state.pageHighlights[state.currentPage.key];
-    if (!hlSet || !hlSet.size) return;
+    var hlMap = state.pageHighlights[state.currentPage.key];
+    if (!hlMap || !hlMap.size) return;
     var rows = document.querySelectorAll('.topic-list-body tr[data-topic-id]');
     rows.forEach(function (tr) {
       var id = parseInt(tr.getAttribute('data-topic-id'), 10);
-      if (hlSet.has(id)) {
+      var color = hlMap.get(id);
+      if (color) {
         if (!tr.classList.contains('ldf-highlight')) tr.classList.add('ldf-highlight');
+        tr.style.setProperty('--ldf-hl', color);
       }
     });
   }
@@ -681,6 +693,8 @@
   var modal = null;
   var editView = null; // 'list' | 'edit'
   var editingRule = null; // 当前编辑的规则对象（null=新建）
+  var listPreview = { open: false, title: '', catId: '', tags: '' }; // 列表页匹配预览状态（renderListView 重建 DOM 后回填）
+  var listPvTimer = null;
 
   function scopeSummary(scope) {
     if (!scope || scope.type === 'global') return '全局';
@@ -725,9 +739,12 @@
     if (!rules.length) {
       rowsHtml = '<div class="ldf-empty"><div class="ldf-empty-icon">☰</div><div class="ldf-empty-text">暂无规则</div><div class="ldf-empty-sub">点击右上方「新建规则」开始过滤你不想看到的主题</div></div>';
     } else {
+      var hlCount = 0;
       rules.forEach(function (r, idx) {
         var statusTag = r.status === 'draft' ? '<span class="ldf-tag-draft">草稿</span>' : '';
-        var modeTag = r.mode === 'highlight' ? '<span class="ldf-tag-highlight">高亮</span>' : '<span class="ldf-tag-filter">过滤</span>';
+        var modeTag = r.mode === 'highlight'
+          ? '<span class="ldf-tag-highlight">高亮</span><span class="ldf-hl-dot" style="background:' + hlColorFor(r, hlCount++) + '" title="高亮颜色"></span>'
+          : '<span class="ldf-tag-filter">过滤</span>';
         var activeCls = r.status === 'active' ? 'ldf-active' : 'ldf-draft';
         var fullExpr = r.expr || '';
         var exprShow = fullExpr.slice(0, 80);
@@ -753,9 +770,14 @@
       + '<div class="ldf-list-toolbar">'
       + '<button id="ldf-add" class="btn btn-primary ldf-btn-add">+ 新建规则</button>'
       + '<span class="ldf-toolbar-spacer"></span>'
-      + '<button id="ldf-export" class="ldf-btn-ghost">导出</button>'
       + '<button id="ldf-import" class="ldf-btn-ghost">导入</button>'
+      + '<button id="ldf-export" class="ldf-btn-ghost">导出</button>'
+      + '<button id="ldf-lpv-toggle" class="btn btn-primary ldf-lpv-toggle' + (listPreview.open ? ' ldf-on' : '') + '">匹配预览<span class="ldf-lpv-caret">▾</span></button>'
       + '<input type="file" id="ldf-import-file" accept=".json,application/json" style="display:none">'
+      + '</div>'
+      + '<div id="ldf-lpv" class="ldf-lpv-card" style="display:' + (listPreview.open ? 'block' : 'none') + '">'
+      + '<div class="ldf-pv-bar"><input type="text" id="ldf-lpv-title" placeholder="标题" value="' + escAttr(listPreview.title) + '"><select id="ldf-lpv-cat"><option value="">选择类别</option>' + catOptionsHtml() + '</select><input type="text" id="ldf-lpv-tags" placeholder="标签（逗号分隔）" value="' + escAttr(listPreview.tags) + '"></div>'
+      + '<div id="ldf-lpv-result" class="ldf-lpv-result"></div>'
       + '</div>'
       + '<div class="ldf-list-body">' + rowsHtml + '</div>'
       + '<div class="ldf-modal-footer"><span class="ldf-footer-hint">保存后点击「应用」刷新生效</span><button id="ldf-apply" class="btn btn-primary">应用</button></div>';
@@ -778,6 +800,24 @@
         renderListView();
       });
     });
+    // 匹配预览：状态存模块变量，renderListView 重建 DOM 后回填
+    box.querySelector('#ldf-lpv-toggle').addEventListener('click', function () {
+      listPreview.open = !listPreview.open;
+      box.querySelector('#ldf-lpv').style.display = listPreview.open ? 'block' : 'none';
+      this.classList.toggle('ldf-on', listPreview.open);
+      if (listPreview.open) runListPreview();
+    });
+    var lpvFields = { 'ldf-lpv-title': 'title', 'ldf-lpv-cat': 'catId', 'ldf-lpv-tags': 'tags' };
+    Object.keys(lpvFields).forEach(function (id) {
+      var el = box.querySelector('#' + id);
+      if (el) el.addEventListener('input', function () {
+        listPreview[lpvFields[id]] = el.value;
+        clearTimeout(listPvTimer); listPvTimer = setTimeout(runListPreview, 300);
+      });
+    });
+    var lpvCat = box.querySelector('#ldf-lpv-cat');
+    if (lpvCat) lpvCat.value = listPreview.catId || '';
+    if (listPreview.open) runListPreview();
   }
 
   function deleteRule(idx) {
@@ -819,6 +859,9 @@
     var scopeType = (r.scope && r.scope.type) || 'global';
     var includeHome = (r.scope && r.scope.includeHome) ? 'checked' : '';
     var mode = r.mode || 'filter';
+    // 默认高亮色：显式色优先，否则按该规则在全部高亮规则（含草稿）中的序号取调色板
+    var hlIdx = state.rules.slice(0, r._idx == null ? state.rules.length : r._idx).filter(function (x) { return x.mode === 'highlight'; }).length;
+    var hlColor = hlColorFor(r, hlIdx);
     return ''
       + '<div class="ldf-modal-header"><div class="ldf-modal-titles"><div class="ldf-modal-title">' + (r._idx == null ? '新建规则' : '编辑规则') + '</div><div class="ldf-modal-sub">配置匹配条件与作用范围</div></div><span class="ldf-close-icon" data-act="back" title="返回列表">✕</span></div>'
       + '<div class="ldf-edit-body">'
@@ -827,7 +870,9 @@
       + '<div class="ldf-segmented">'
       + '<label class="ldf-seg"><input type="radio" name="ldf-mode" value="filter"' + (mode === 'filter' ? ' checked' : '') + '><span>过滤</span></label>'
       + '<label class="ldf-seg"><input type="radio" name="ldf-mode" value="highlight"' + (mode === 'highlight' ? ' checked' : '') + '><span>高亮</span></label>'
-      + '</div></div>'
+      + '</div>'
+      + '<div id="ldf-color-row" class="ldf-color-row" style="display:' + (mode === 'highlight' ? 'flex' : 'none') + '"><input type="color" id="ldf-color" value="' + hlColor + '"><span class="ldf-color-hint">命中该规则的帖子以此颜色高亮</span></div>'
+      + '</div>'
       + '<div class="ldf-field"><label>作用域</label>'
       + '<div class="ldf-segmented">'
       + '<label class="ldf-seg"><input type="radio" name="ldf-scope" value="global"' + (scopeType === 'global' ? ' checked' : '') + '><span>全局</span></label>'
@@ -857,8 +902,7 @@
       + '</div>'
       + '<div class="ldf-field"><label>匹配预览</label>'
       + '<div class="ldf-preview">'
-      + '<div class="ldf-preview-row"><input type="text" id="ldf-pv-title" placeholder="标题"><select id="ldf-pv-cat"><option value="">选择类别</option>' + catOptionsHtml() + '</select></div>'
-      + '<input type="text" id="ldf-pv-tags" placeholder="标签（逗号分隔多个）">'
+      + '<div class="ldf-pv-bar"><input type="text" id="ldf-pv-title" placeholder="标题"><select id="ldf-pv-cat"><option value="">选择类别</option>' + catOptionsHtml() + '</select><input type="text" id="ldf-pv-tags" placeholder="标签（逗号分隔）"></div>'
       + '<div id="ldf-pv-result" class="ldf-pv-result"></div>'
       + '</div></div>'
       + '</div>'
@@ -916,6 +960,13 @@
       });
     });
 
+    // 规则类型 radio：高亮模式才显示颜色选择
+    box.querySelectorAll('input[name="ldf-mode"]').forEach(function (r) {
+      r.addEventListener('change', function () {
+        box.querySelector('#ldf-color-row').style.display = (r.value === 'highlight' && r.checked) ? 'flex' : 'none';
+      });
+    });
+
     // 预览输入
     ['ldf-pv-title', 'ldf-pv-cat', 'ldf-pv-tags'].forEach(function (id) {
       var el = box.querySelector('#' + id);
@@ -940,7 +991,7 @@
       var includeHome = box.querySelector('#ldf-include-home').checked;
       scope = { type: 'category', categoryIds: catIds, includeHome: includeHome };
     }
-    return { name: name, mode: mode, expr: expr, scope: scope };
+    return { name: name, mode: mode, expr: expr, scope: scope, color: box.querySelector('#ldf-color').value };
   }
 
   function saveEditingRule(status) {
@@ -956,6 +1007,12 @@
     modal.querySelector('#ldf-view-edit').style.display = 'none';
   }
 
+  // 由标题/类别/标签构造模拟帖子（编辑视图与列表视图的匹配预览共用）
+  function buildMockTopic(title, catId, tagsStr) {
+    var tags = tagsStr ? tagsStr.split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean).map(function (n) { return { name: n }; }) : [];
+    return { title: title, category_id: catId ? parseInt(catId, 10) : -1, tags: tags };
+  }
+
   function runPreview() {
     var box = modal.querySelector('#ldf-view-edit');
     if (!box) return;
@@ -966,8 +1023,7 @@
     var catId = box.querySelector('#ldf-pv-cat').value;
     var tagsStr = (box.querySelector('#ldf-pv-tags').value || '').trim();
     if (!expr) { resultEl.innerHTML = '<span class="ldf-pv-idle">请输入表达式</span>'; return; }
-    var tags = tagsStr ? tagsStr.split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean).map(function (n) { return { name: n }; }) : [];
-    var mockTopic = { title: title, category_id: catId ? parseInt(catId, 10) : -1, tags: tags };
+    var mockTopic = buildMockTopic(title, catId, tagsStr);
     try {
       var ast = parseDSL(expr);
       if (!state.catMap) { resultEl.innerHTML = '<span class="ldf-pv-idle">类别映射加载中…</span>'; return; }
@@ -984,6 +1040,43 @@
     } catch (e) {
       resultEl.innerHTML = '<span class="ldf-pv-err">✗ 表达式错误：' + escHtml(e.message) + '</span>';
     }
+  }
+
+  // 列表视图匹配预览：用模拟帖子评估全部规则（含草稿），显示命中了哪条规则及最终效果
+  function runListPreview() {
+    var box = modal ? modal.querySelector('#ldf-view-list') : null;
+    var resultEl = box ? box.querySelector('#ldf-lpv-result') : null;
+    if (!resultEl) return;
+    if (!state.rules.length) { resultEl.innerHTML = '<span class="ldf-pv-idle">暂无规则</span>'; return; }
+    if (!state.catMap) { resultEl.innerHTML = '<span class="ldf-pv-idle">类别映射加载中…</span>'; return; }
+    var mockTopic = buildMockTopic(listPreview.title, listPreview.catId, listPreview.tags);
+    var rows = '', hitCount = 0, firstHl = null, firstFilter = null, hlIdx = 0;
+    state.rules.forEach(function (r) {
+      var color = r.mode === 'highlight' ? hlColorFor(r, hlIdx++) : null;
+      var hit = false, errMsg = null;
+      try { hit = compile(parseDSL(r.expr || ''))(mockTopic); } catch (e) { errMsg = e.message; }
+      if (errMsg) {
+        rows += '<div class="ldf-lpv-row"><span class="ldf-tag-draft">错误</span><span>' + escHtml(r.name || '(未命名)') + '</span><span class="ldf-pv-err">' + escHtml(errMsg) + '</span></div>';
+        return;
+      }
+      if (!hit) return;
+      hitCount++;
+      rows += '<div class="ldf-lpv-row">'
+        + (r.mode === 'highlight' ? '<span class="ldf-tag-highlight">高亮</span><span class="ldf-hl-dot" style="background:' + color + '"></span>' : '<span class="ldf-tag-filter">过滤</span>')
+        + '<span>' + escHtml(r.name || '(未命名)') + '</span>'
+        + (r.status === 'draft' ? '<span class="ldf-tag-draft">草稿</span>' : '')
+        + '</div>';
+      // 最终效果只看 active 规则（与引擎一致：高亮优先，同级先命中者优先）
+      if (r.status !== 'active') return;
+      if (r.mode === 'highlight') { if (!firstHl) firstHl = { name: r.name, color: color }; }
+      else if (!firstFilter) firstFilter = r.name;
+    });
+    var html = rows ? '<div class="ldf-lpv-rows">' + rows + '</div>' : '';
+    html += '<div class="ldf-lpv-count">命中 ' + hitCount + ' / ' + state.rules.length + ' · 预览忽略作用域</div>';
+    if (firstHl) html += '<div><span class="ldf-pv-hl">✓ 最终：会被高亮（' + escHtml(firstHl.name || '(未命名)') + '）</span><span class="ldf-hl-dot" style="background:' + firstHl.color + '"></span></div>';
+    else if (firstFilter) html += '<div><span class="ldf-pv-hit">✓ 最终：会被过滤（' + escHtml(firstFilter || '(未命名)') + '）</span></div>';
+    else html += '<div><span class="ldf-pv-miss">✗ 最终：' + (hitCount ? '命中的均为草稿，帖子不受影响' : '未命中任何规则，帖子不受影响') + '</span></div>';
+    resultEl.innerHTML = html;
   }
 
   // ── 导入/导出 ──
@@ -1016,6 +1109,7 @@
             mode: r.mode || 'filter',
             status: r.status || 'draft',
             expr: r.expr || '',
+            color: r.color,
             scope: r.scope || { type: 'global' }
           });
         });
@@ -1039,9 +1133,10 @@
     var css = document.createElement('style');
     css.textContent = [
       '.ldf-selfempty a{cursor:pointer}',
-      '.ldf-highlight{background:rgba(255,176,0,.12)!important;border-left:3px solid #ffb000!important}',
-      '.ldf-highlight:hover{background:rgba(255,176,0,.18)!important}',
+      '.ldf-highlight{background:color-mix(in srgb,var(--ldf-hl,#ffb000) 12%,transparent)!important;border-left:3px solid var(--ldf-hl,#ffb000)!important}',
+      '.ldf-highlight:hover{background:color-mix(in srgb,var(--ldf-hl,#ffb000) 18%,transparent)!important}',
       '.ldf-highlight .title{font-weight:600}',
+      '.ldf-hl-dot{display:inline-block;width:9px;height:9px;border-radius:50%;vertical-align:middle;box-shadow:0 0 0 1px rgba(0,0,0,.15)}',
       // header group (gear + filtered button as one pill)
       '#ldf-header-group{display:inline-flex;align-items:stretch;margin-left:6px;border:1px solid var(--primary-low,#ccc);border-radius:6px;background:var(--secondary,#fff);overflow:hidden;height:28px}',
       '#ldf-settings-btn.ldf-icon-btn{display:inline-flex;align-items:center;justify-content:center;width:34px;padding:0;border:none;background:transparent;color:var(--primary-medium,#888);cursor:pointer;transition:background .15s,color .15s}',
@@ -1084,7 +1179,7 @@
       '#ldf-modal .ldf-list-toolbar{padding:12px 20px;display:flex;align-items:center;gap:8px;flex-shrink:0;border-bottom:1px solid var(--primary-low,#f3f3f3)}',
       '#ldf-modal .ldf-toolbar-spacer{flex:1}',
       '#ldf-modal .ldf-btn-add{font-size:14px}',
-      '#ldf-modal .ldf-btn-ghost{font-size:13px;padding:5px 12px;cursor:pointer;border:1px solid var(--primary-low,#ccc);background:transparent;border-radius:5px;color:var(--primary,#222);transition:background .15s,border-color .15s}',
+      '#ldf-modal .ldf-btn-ghost{font-size:13px;line-height:1.4;padding:5px 12px;cursor:pointer;border:1px solid var(--primary-low,#ccc);background:transparent;border-radius:5px;color:var(--primary,#222);transition:background .15s,border-color .15s}',
       '#ldf-modal .ldf-btn-ghost:hover{background:var(--primary-low,#f3f3f3);border-color:var(--primary-low-mid,#bbb)}',
       // list body
       '#ldf-modal .ldf-list-body{flex:1;overflow-y:auto;padding:8px 20px 12px}',
@@ -1152,12 +1247,22 @@
       '#ldf-modal .ldf-include-home{display:block;margin-top:10px;padding-top:8px;border-top:1px solid var(--primary-low,#eee);font-size:14px;cursor:pointer}',
       // preview
       '#ldf-modal .ldf-preview{border:1px solid var(--primary-low,#eee);border-radius:7px;padding:12px;background:var(--primary-very-low,#fafafa)}',
-      '#ldf-modal .ldf-preview-row{display:flex;gap:8px;margin-bottom:6px}',
-      '#ldf-modal .ldf-preview input,#ldf-modal .ldf-preview select{margin-bottom:6px}',
-      '#ldf-modal .ldf-preview-row input,#ldf-modal .ldf-preview-row select{margin-bottom:0}',
-      '#ldf-modal .ldf-preview-row input{flex:1;min-width:0}',
-      '#ldf-modal .ldf-preview-row select{width:auto;flex:0 1 220px}',
       '#ldf-modal .ldf-pv-result{font-size:14px;padding:8px 0 2px}',
+      '#ldf-modal .ldf-color-row{align-items:center;gap:8px;margin-top:8px}',
+      '#ldf-modal .ldf-color-hint{font-size:12px;color:var(--primary-medium,#888)}',
+      '#ldf-modal .ldf-field input[type=color]{width:44px;height:30px;padding:1px 2px;border:1px solid var(--primary-low,#ccc);border-radius:6px;background:var(--secondary,#fff);cursor:pointer}',
+      '#ldf-modal .ldf-lpv-toggle{font-size:13px;padding:5px 12px;line-height:1.4}',
+      '#ldf-modal .ldf-lpv-toggle .ldf-lpv-caret{display:inline-block;margin-left:4px;font-size:10px;transition:transform .15s}',
+      '#ldf-modal .ldf-lpv-toggle.ldf-on{filter:brightness(.88)}',
+      '#ldf-modal .ldf-lpv-card{margin:0 20px 10px;padding:8px 10px;border:1px solid var(--primary-low,#eee);border-radius:7px;background:var(--primary-very-low,#fafafa)}',
+      '#ldf-modal .ldf-pv-bar{display:flex;gap:6px}',
+      '#ldf-modal .ldf-pv-bar input[type=text],#ldf-modal .ldf-pv-bar select{flex:1;min-width:0;margin:0;padding:4px 8px;font-size:13px;line-height:1.4;border:1px solid var(--primary-low,#ccc);border-radius:5px;background:var(--secondary,#fff);color:var(--primary,#222)}',
+      '#ldf-modal .ldf-pv-bar select{flex:0 0 150px}',
+      '#ldf-modal .ldf-pv-bar input:focus,#ldf-modal .ldf-pv-bar select:focus{outline:none;border-color:var(--tertiary,#08c)}',
+      '#ldf-modal .ldf-lpv-result{font-size:13px;padding:6px 0 0}',
+      '#ldf-modal .ldf-lpv-rows{display:flex;flex-direction:column;gap:3px;margin-bottom:4px}',
+      '#ldf-modal .ldf-lpv-row{font-size:12px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}',
+      '#ldf-modal .ldf-lpv-count{font-size:12px;color:var(--primary-medium,#888);margin-bottom:2px}',
       '#ldf-modal .ldf-pv-hit{color:#d12c25}#ldf-modal .ldf-pv-miss{color:#2a9d4a}#ldf-modal .ldf-pv-err{color:#d12c25}#ldf-modal .ldf-pv-idle{color:var(--primary-medium,#888)}#ldf-modal .ldf-pv-hl{color:#b07000}'
     ].join('\n');
     document.head.appendChild(css);
