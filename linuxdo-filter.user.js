@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         LinuxDo 高级过滤器 · 日期测试 Beta 1.5.1.6
+// @name         LinuxDo 高级过滤器 · 日期测试 Beta 1.5.1.7
 // @namespace    https://github.com/Liu8Can/LinuxDo-Advanced-Fitler/date-filter-beta
-// @version      1.5.1-beta.6
+// @version      1.5.1-beta.7
 // @description  测试版：增加创建/最后回复日期规则；按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、规则优先级(可调)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。高亮规则独立配色，规则列表支持全规则匹配预览。
 // @author       you
 // @match        https://linux.do/*
@@ -19,6 +19,41 @@
   // ───────────────────────── 常量 ─────────────────────────
   var BUCKET_MAX = 1000;
   var RULES_KEY = 'ldf_date_beta_rules_v1';        // [{name, mode:'filter'|'highlight', status:'active'|'draft', expr, color?, scope:{type,...}}]
+  var VISITED_KEY = 'ldf_date_beta_visited_topics_v1';
+  var visitedIds = new Set();
+  var savedVisits = gmGet(VISITED_KEY, []);
+  if (Array.isArray(savedVisits)) savedVisits.forEach(function (id) { if (/^\d+$/.test(String(id))) visitedIds.add(String(id)); });
+  function topicIdFromUrl(url) {
+    try {
+      var u = new URL(url, location.href);
+      if (u.origin !== location.origin) return null;
+      var m = /^\/t\/(?:[^/]+\/)?(\d+)(?:\/|$)/.exec(u.pathname);
+      return m ? m[1] : null;
+    } catch (e) { return null; }
+  }
+  function recordVisit(id) {
+    if (!id || visitedIds.has(String(id))) return;
+    visitedIds.add(String(id));
+    var ids = Array.from(visitedIds);
+    if (ids.length > 20000) { ids = ids.slice(-20000); visitedIds = new Set(ids); }
+    gmSet(VISITED_KEY, ids);
+  }
+  function recordCurrentTopic() { recordVisit(topicIdFromUrl(location.href)); }
+  ['pushState', 'replaceState'].forEach(function (method) {
+    var original = history[method];
+    if (typeof original !== 'function') return;
+    history[method] = function () {
+      var result = original.apply(this, arguments);
+      recordCurrentTopic();
+      return result;
+    };
+  });
+  window.addEventListener('popstate', recordCurrentTopic);
+  document.addEventListener('click', function (event) {
+    var a = event.target && event.target.closest && event.target.closest('a[href]');
+    if (a && !event.defaultPrevented && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) recordVisit(topicIdFromUrl(a.href));
+  }, false);
+  recordCurrentTopic();
   var HOME_ROUTES = ['latest', 'new', 'unseen', 'hot', 'top', 'read'];
   var HL_PALETTE = ['#ffb000', '#1971c2', '#2f9e44', '#e03131', '#9c36b5', '#f76707', '#0c8599', '#66a80f']; // 高亮自动配色（首色为原琥珀色）
 
@@ -144,7 +179,7 @@
       if (w.length) {
         var up = w.toUpperCase();
         if (up === 'AND' || up === 'OR' || up === 'NOT') tokens.push({ t: up });
-        else if (/^(category|tag|title|createdwithin|lastpostedwithin|createdbefore|createdafter|lastpostedbefore|lastpostedafter|createdbetween|lastpostedbetween)$/i.test(w)) tokens.push({ t: 'atom', v: w.toLowerCase() });
+        else if (/^(category|tag|title|createdwithin|lastpostedwithin|createdbefore|createdafter|lastpostedbefore|lastpostedafter|createdbetween|lastpostedbetween|visited)$/i.test(w)) tokens.push({ t: 'atom', v: w.toLowerCase() });
         else tokens.push({ t: 'word', v: w });
         continue;
       }
@@ -190,6 +225,7 @@
       if (tk.v === 'category') return this.parseCategoryArgs();
       if (tk.v === 'tag') return this.parseTagArgs();
       if (tk.v === 'title') return this.parseTitleArg();
+      if (tk.v === 'visited') { this.expect(')'); return { op: 'visited' }; }
       if (/^(createdwithin|lastpostedwithin|createdbefore|createdafter|lastpostedbefore|lastpostedafter|createdbetween|lastpostedbetween)$/.test(tk.v)) return this.parseDateArgs(tk.v);
       throw new Error('未知原子：' + tk.v);
     }
@@ -254,6 +290,7 @@
       case 'OR': { var l = compile(node.l), r = compile(node.r); return function (t) { return l(t) || r(t); }; }
       case 'AND': { var la = compile(node.l), ra = compile(node.r); return function (t) { return la(t) && ra(t); }; }
       case 'NOT': { var v = compile(node.v); return function (t) { return !v(t); }; }
+      case 'visited': return function (t) { return !!t && t.id != null && visitedIds.has(String(t.id)); };
       case 'category': {
         var ids = resolveCategoryIds(node.name, node.levels);
         return function (t) { return ids.has(t.category_id); };
@@ -347,7 +384,8 @@
       { name: '过滤广告', mode: 'filter', status: 'active', expr: '(category(搞七捻三, 0) AND tag(纯水, 病友, 树洞, 职场) OR tag(高级推广) OR category(前沿快讯, 0) OR title(/公益推广|\\?|？|吗|麻烦|请|什么|如何|哪个|怎么|求|吃瓜|还是|为什么|求助/)) AND NOT title(开源)', scope: scope },
       { name: '匹配福利贴', mode: 'highlight', status: 'active', expr: '(category(福利羊毛, 1, 2, 3) OR title("羊毛")) AND NOT title(/已拉闸|已失效/)', scope: scope },
       { name: '日期测试：隐藏超过7天的旧帖', mode: 'filter', status: 'draft', expr: 'NOT createdWithin(7d)', scope: scope },
-      { name: '日期测试：高亮24小时内回复', mode: 'highlight', status: 'draft', expr: 'lastPostedWithin(24h)', scope: scope }
+      { name: '日期测试：高亮24小时内回复', mode: 'highlight', status: 'draft', expr: 'lastPostedWithin(24h)', scope: scope },
+      { name: '隐藏已访问主题', mode: 'filter', status: 'active', expr: 'visited()', scope: scope }
     ];
     var rules = Array.isArray(existing) ? existing : [];
     var changed = !Array.isArray(existing);
@@ -375,7 +413,7 @@
         var ast = parseDSL(r.expr || '');
         if (!state.catMap) ensureCatMapFallback();
         var fn = compile(ast);
-        var entry = { name: r.name, fn: fn, scope: r.scope || { type: 'global' } };
+        var entry = { name: r.name, expr: r.expr || '', fn: fn, scope: r.scope || { type: 'global' } };
         if (r.mode === 'highlight') { entry.color = hlColor; state.highlightPredicates.push(entry); }
         else state.filterPredicates.push(entry);
       } catch (e) { /* 编译错误静默，编辑器会显示 */ }
@@ -449,6 +487,13 @@
   function splitTopics(topics, pg) {
     var highlighted = [], kept = [], filtered = [], hlColors = new Map();
     (topics || []).forEach(function (t) {
+      // 已访问过滤规则优先于高亮；其他规则的优先级保持不变。
+      var visitedFiltered = state.filterPredicates.some(function (r) {
+        if (!/\bvisited\s*\(/i.test(r.expr)) return false;
+        if (!ruleAppliesToPage(r, pg)) return false;
+        try { return r.fn(t); } catch (e) { return false; }
+      });
+      if (visitedFiltered) { filtered.push(t); return; }
       var rank = highlightRank(t, pg);
       if (rank >= 0) { t.__ldfRank = rank; highlighted.push(t); hlColors.set(t.id, state.highlightPredicates[rank].color); }
       else if (isFiltered(t, pg)) filtered.push(t);
@@ -941,7 +986,7 @@
       + '<span id="ldf-expr-status" class="ldf-expr-status"></span>'
       + '<div class="ldf-expr-help">'
       + '<div class="ldf-expr-help-title">语法说明</div>'
-      + '<div class="ldf-cat-hint">测试版 v1.5.1-beta.6：示例规则自动补齐；日期测试规则默认草稿，可在规则列表启用。时间单位：h 小时 / d 天 / w 周 / mo 30天。</div>'
+      + '<div class="ldf-cat-hint">测试版 v1.5.1-beta.7：示例规则自动补齐；日期测试规则默认草稿，可在规则列表启用。时间单位：h 小时 / d 天 / w 周 / mo 30天。</div>'
       + '<div class="ldf-expr-help-grid">'
       + '<code>s1 AND (s2 OR s3) AND NOT s4</code><span>且/或/非，支持分组</span>'
       + '<code>category(名称[, 级别…])</code><span>匹配类别（级别：0/1/2/3，省略代表全部）</span>'
@@ -950,6 +995,7 @@
       + '<code>title(/正则/标志)</code><span>标题正则匹配</span>'
       + '<code>createdWithin(7d)</code><span>首次发布在最近 7 天内；支持 h/d/w/mo</span>'
       + '<code>lastPostedWithin(24h)</code><span>最后回复在最近 24 小时内</span>'
+      + '<code>visited()</code><span>本机曾经打开过的主题（从安装此版本开始记录；不要求读完）</span>'
       + '<code>createdBefore("2026-10-01")</code><span>首次发布早于指定日期（UTC）</span>'
       + '<code>createdAfter("2026-10-01")</code><span>首次发布不早于指定日期（UTC）</span>'
       + '<code>createdBetween("2026-10-01","2026-10-13")</code><span>首次发布时间区间（含两端日期，UTC）</span>'
@@ -1338,6 +1384,7 @@
         if (!mo) return;
         var prevKey = state.currentPage ? state.currentPage.key : null;
         syncCurrentPage();
+        recordCurrentTopic();
         ensureTopBtn();
         tryRenderSelfEmpty();
         tryApplyHighlights();
