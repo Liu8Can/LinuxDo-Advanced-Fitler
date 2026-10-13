@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         LinuxDo 高级过滤器
-// @namespace    https://linux.do/
-// @version      1.5.0
-// @description  按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、规则优先级(可调)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。高亮规则独立配色，规则列表支持全规则匹配预览。
+// @name         LinuxDo 高级过滤器（日期过滤测试版）
+// @namespace    https://github.com/Liu8Can/LinuxDo-Advanced-Fitler/date-filter-beta
+// @version      1.5.1-beta.1
+// @description  测试版：增加创建/最后回复日期规则；按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、规则优先级(可调)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。高亮规则独立配色，规则列表支持全规则匹配预览。
 // @author       you
 // @match        https://linux.do/*
 // @run-at       document-start
@@ -16,7 +16,7 @@
 
   // ───────────────────────── 常量 ─────────────────────────
   var BUCKET_MAX = 1000;
-  var RULES_KEY = 'ldf_rules_v2';        // [{name, mode:'filter'|'highlight', status:'active'|'draft', expr, color?, scope:{type,...}}]
+  var RULES_KEY = 'ldf_date_beta_rules_v1';        // [{name, mode:'filter'|'highlight', status:'active'|'draft', expr, color?, scope:{type,...}}]
   var HOME_ROUTES = ['latest', 'new', 'unseen', 'hot', 'top', 'read'];
   var HL_PALETTE = ['#ffb000', '#1971c2', '#2f9e44', '#e03131', '#9c36b5', '#f76707', '#0c8599', '#66a80f']; // 高亮自动配色（首色为原琥珀色）
 
@@ -142,7 +142,7 @@
       if (w.length) {
         var up = w.toUpperCase();
         if (up === 'AND' || up === 'OR' || up === 'NOT') tokens.push({ t: up });
-        else if (w.toLowerCase() === 'category' || w.toLowerCase() === 'tag' || w.toLowerCase() === 'title') tokens.push({ t: 'atom', v: w.toLowerCase() });
+        else if (/^(category|tag|title|createdwithin|lastpostedwithin|createdbefore|createdafter|lastpostedbefore|lastpostedafter|createdbetween|lastpostedbetween)$/i.test(w)) tokens.push({ t: 'atom', v: w.toLowerCase() });
         else tokens.push({ t: 'word', v: w });
         continue;
       }
@@ -188,6 +188,7 @@
       if (tk.v === 'category') return this.parseCategoryArgs();
       if (tk.v === 'tag') return this.parseTagArgs();
       if (tk.v === 'title') return this.parseTitleArg();
+      if (/^(createdwithin|lastpostedwithin|createdbefore|createdafter|lastpostedbefore|lastpostedafter|createdbetween|lastpostedbetween)$/.test(tk.v)) return this.parseDateArgs(tk.v);
       throw new Error('未知原子：' + tk.v);
     }
     throw new Error('意外的 token：' + tk.t);
@@ -228,6 +229,20 @@
     if (tk.t === 'str' || tk.t === 'word') { this.expect(')'); return { op: 'title', literal: tk.v }; }
     throw new Error('title() 参数应为正则或字符串');
   };
+  Parser.prototype.parseDateArgs = function (op) {
+    var args = this.parseNameList(); this.expect(')');
+    var expected = /between$/.test(op) ? 2 : 1;
+    if (args.length !== expected) throw new Error(op + '() 需要 ' + expected + ' 个参数');
+    if (/within$/.test(op)) {
+      var match = /^(\\d+)(h|d|w|mo)$/i.exec(args[0]);
+      if (!match || Number(match[1]) <= 0) throw new Error('时间跨度应为正整数加 h/d/w/mo，如 7d');
+      return { op: 'date', field: /^created/.test(op) ? 'created_at' : 'last_posted_at', kind: 'within', duration: Number(match[1]) * ({h:3600000,d:86400000,w:604800000,mo:2592000000})[match[2].toLowerCase()] };
+    }
+    args.forEach(function (value) {
+      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(value) || !Number.isFinite(Date.parse(value + 'T00:00:00Z')) || new Date(value + 'T00:00:00Z').toISOString().slice(0,10) !== value) throw new Error('日期格式应为有效的 YYYY-MM-DD');
+    });
+    return { op: 'date', field: /^created/.test(op) ? 'created_at' : 'last_posted_at', kind: /between$/.test(op) ? 'between' : /before$/.test(op) ? 'before' : 'after', dates: args };
+  };
   function parseDSL(src) { return new Parser(tokenize(src)).parse(); }
 
   // ───────────────────────── DSL：编译为谓词 ─────────────────────────
@@ -244,6 +259,20 @@
       case 'tag': {
         var set = new Set(node.names.map(function (s) { return (s || '').toLowerCase(); }));
         return function (t) { return !!(t.tags && t.tags.some(function (x) { return set.has((x.name || '').toLowerCase()); })); };
+      }
+      case 'date': {
+        var start = node.dates && Date.parse(node.dates[0] + 'T00:00:00Z');
+        var end = node.dates && node.dates[1] && Date.parse(node.dates[1] + 'T00:00:00Z') + 86400000;
+        return function (t) {
+          var raw = t && t[node.field];
+          if (typeof raw !== 'string') return false;
+          var time = Date.parse(raw);
+          if (!Number.isFinite(time)) return false;
+          if (node.kind === 'within') { var now = Date.now(); return time <= now && time >= now - node.duration; }
+          if (node.kind === 'before') return time < start;
+          if (node.kind === 'after') return time >= start;
+          return time >= start && time < end;
+        };
       }
       case 'title': {
         var re = ('regex' in node) ? new RegExp(node.regex, node.flags || '') : new RegExp(escapeRe(node.literal || ''), 'i');
