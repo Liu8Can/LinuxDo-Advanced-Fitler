@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 高级过滤器（日期过滤测试版）
 // @namespace    https://github.com/Liu8Can/LinuxDo-Advanced-Fitler/date-filter-beta
-// @version      1.5.1-beta.3
+// @version      1.5.1-beta.4
 // @description  测试版：增加创建/最后回复日期规则；按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、规则优先级(可调)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。高亮规则独立配色，规则列表支持全规则匹配预览。
 // @author       you
 // @match        https://linux.do/*
@@ -339,15 +339,20 @@
   // 仅在首次安装测试版且没有已保存规则时，写入示例规则；不会覆盖用户编辑。
   function ensureDemoRules() {
     var existing = gmGet(RULES_KEY, null);
-    if (existing !== null && existing !== undefined) return;
     var scope = { type: 'global' };
-    gmSet(RULES_KEY, [
+    var defaults = [
       { name: '匹配开源项目', mode: 'highlight', status: 'active', expr: 'title(/开源|教程/) OR tag(开源推广)', scope: scope },
       { name: '过滤广告', mode: 'filter', status: 'active', expr: '(category(搞七捻三, 0) AND tag(纯水, 病友, 树洞, 职场) OR tag(高级推广) OR category(前沿快讯, 0) OR title(/公益推广|\\?|？|吗|麻烦|请|什么|如何|哪个|怎么|求|吃瓜|还是|为什么|求助/)) AND NOT title(开源)', scope: scope },
       { name: '匹配福利贴', mode: 'highlight', status: 'active', expr: '(category(福利羊毛, 1, 2, 3) OR title("羊毛")) AND NOT title(/已拉闸|已失效/)', scope: scope },
       { name: '日期测试：隐藏超过7天的旧帖', mode: 'filter', status: 'draft', expr: 'NOT createdWithin(7d)', scope: scope },
       { name: '日期测试：高亮24小时内回复', mode: 'highlight', status: 'draft', expr: 'lastPostedWithin(24h)', scope: scope }
-    ]);
+    ];
+    var rules = Array.isArray(existing) ? existing : [];
+    var changed = !Array.isArray(existing);
+    defaults.forEach(function (rule) {
+      if (!rules.some(function (r) { return r.name === rule.name; })) { rules.push(rule); changed = true; }
+    });
+    if (changed) gmSet(RULES_KEY, rules);
   }
 
   // ───────────────────────── 规则引擎 ─────────────────────────
@@ -934,6 +939,7 @@
       + '<span id="ldf-expr-status" class="ldf-expr-status"></span>'
       + '<div class="ldf-expr-help">'
       + '<div class="ldf-expr-help-title">语法说明</div>'
+      + '<div class="ldf-cat-hint">测试版 v1.5.1-beta.4：示例规则自动补齐；日期测试规则默认草稿，可在规则列表启用。时间单位：h 小时 / d 天 / w 周 / mo 30天。</div>'
       + '<div class="ldf-expr-help-grid">'
       + '<code>s1 AND (s2 OR s3) AND NOT s4</code><span>且/或/非，支持分组</span>'
       + '<code>category(名称[, 级别…])</code><span>匹配类别（级别：0/1/2/3，省略代表全部）</span>'
