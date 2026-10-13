@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 高级过滤器（日期过滤测试版）
 // @namespace    https://github.com/Liu8Can/LinuxDo-Advanced-Fitler/date-filter-beta
-// @version      1.5.1-beta.1
+// @version      1.5.1-beta.2
 // @description  测试版：增加创建/最后回复日期规则；按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、规则优先级(可调)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。高亮规则独立配色，规则列表支持全规则匹配预览。
 // @author       you
 // @match        https://linux.do/*
@@ -234,12 +234,12 @@
     var expected = /between$/.test(op) ? 2 : 1;
     if (args.length !== expected) throw new Error(op + '() 需要 ' + expected + ' 个参数');
     if (/within$/.test(op)) {
-      var match = /^(\\d+)(h|d|w|mo)$/i.exec(args[0]);
+      var match = /^(\d+)(h|d|w|mo)$/i.exec(args[0]);
       if (!match || Number(match[1]) <= 0) throw new Error('时间跨度应为正整数加 h/d/w/mo，如 7d');
       return { op: 'date', field: /^created/.test(op) ? 'created_at' : 'last_posted_at', kind: 'within', duration: Number(match[1]) * ({h:3600000,d:86400000,w:604800000,mo:2592000000})[match[2].toLowerCase()] };
     }
     args.forEach(function (value) {
-      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(value) || !Number.isFinite(Date.parse(value + 'T00:00:00Z')) || new Date(value + 'T00:00:00Z').toISOString().slice(0,10) !== value) throw new Error('日期格式应为有效的 YYYY-MM-DD');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(Date.parse(value + 'T00:00:00Z')) || new Date(value + 'T00:00:00Z').toISOString().slice(0,10) !== value) throw new Error('日期格式应为有效的 YYYY-MM-DD');
     });
     return { op: 'date', field: /^created/.test(op) ? 'created_at' : 'last_posted_at', kind: /between$/.test(op) ? 'between' : /before$/.test(op) ? 'before' : 'after', dates: args };
   };
@@ -925,6 +925,12 @@
       + '<code>tag(标签1, 标签2, …)</code><span>匹配任一标签</span>'
       + '<code>title("文本")</code><span>标题包含文本</span>'
       + '<code>title(/正则/标志)</code><span>标题正则匹配</span>'
+      + '<code>createdWithin(7d)</code><span>首次发布在最近 7 天内；支持 h/d/w/mo</span>'
+      + '<code>lastPostedWithin(24h)</code><span>最后回复在最近 24 小时内</span>'
+      + '<code>createdBefore("2026-10-01")</code><span>首次发布早于指定日期（UTC）</span>'
+      + '<code>createdAfter("2026-10-01")</code><span>首次发布不早于指定日期（UTC）</span>'
+      + '<code>createdBetween("2026-10-01","2026-10-13")</code><span>首次发布时间区间（含两端日期，UTC）</span>'
+      + '<code>lastPostedBefore/After/Between(...)</code><span>最后回复时间对应的日期条件</span>'
       + '</div>'
       + '<div class="ldf-expr-help-eg"><div>复杂示例：匹配所有0/1级搞七捻三的帖子，或标签带有纯水且同时带有病友或树洞的帖子，但如果标题含有开源则忽略</div><code>(category(搞七捻三,0,1) OR tag(纯水) AND tag(病友,树洞)) AND NOT title(开源)</code></div>'
       + '</div>'
