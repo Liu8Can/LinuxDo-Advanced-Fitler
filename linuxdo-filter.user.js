@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         LinuxDo 高级过滤器（日期过滤测试版）
+// @name         LinuxDo 高级过滤器 · 日期测试 Beta 1.5.1.6
 // @namespace    https://github.com/Liu8Can/LinuxDo-Advanced-Fitler/date-filter-beta
-// @version      1.5.1-beta.5
+// @version      1.5.1-beta.6
 // @description  测试版：增加创建/最后回复日期规则；按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、规则优先级(可调)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。高亮规则独立配色，规则列表支持全规则匹配预览。
 // @author       you
 // @match        https://linux.do/*
@@ -817,7 +817,7 @@
       });
     }
     box.innerHTML =
-      '<div class="ldf-modal-header"><div class="ldf-modal-titles"><div class="ldf-modal-title">高级过滤器</div><div class="ldf-modal-sub">管理过滤 / 高亮规则</div></div><span class="ldf-close-icon" data-act="close" title="关闭">✕</span></div>'
+      '<div class="ldf-modal-header"><div class="ldf-modal-titles"><div class="ldf-modal-title">高级过滤器 · 日期测试</div><div class="ldf-modal-sub">v1.5.1-beta.6 · 管理过滤 / 高亮规则</div></div><span class="ldf-close-icon" data-act="close" title="关闭">✕</span></div>'
       + '<div class="ldf-list-toolbar">'
       + '<button id="ldf-add" class="btn btn-primary ldf-btn-add">+ 新建规则</button>'
       + '<span class="ldf-toolbar-spacer"></span>'
@@ -941,7 +941,7 @@
       + '<span id="ldf-expr-status" class="ldf-expr-status"></span>'
       + '<div class="ldf-expr-help">'
       + '<div class="ldf-expr-help-title">语法说明</div>'
-      + '<div class="ldf-cat-hint">测试版 v1.5.1-beta.5：示例规则自动补齐；日期测试规则默认草稿，可在规则列表启用。时间单位：h 小时 / d 天 / w 周 / mo 30天。</div>'
+      + '<div class="ldf-cat-hint">测试版 v1.5.1-beta.6：示例规则自动补齐；日期测试规则默认草稿，可在规则列表启用。时间单位：h 小时 / d 天 / w 周 / mo 30天。</div>'
       + '<div class="ldf-expr-help-grid">'
       + '<code>s1 AND (s2 OR s3) AND NOT s4</code><span>且/或/非，支持分组</span>'
       + '<code>category(名称[, 级别…])</code><span>匹配类别（级别：0/1/2/3，省略代表全部）</span>'
