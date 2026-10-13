@@ -1,12 +1,10 @@
 // ==UserScript==
-// @name         LinuxDo 高级过滤器 · 日期测试 Beta 1.5.1.8
-// @namespace    https://github.com/Liu8Can/LinuxDo-Advanced-Fitler/date-filter-beta
-// @version      1.5.1-beta.8
-// @description  测试版：增加创建/最后回复日期规则；按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、规则优先级(可调)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。高亮规则独立配色，规则列表支持全规则匹配预览。
+// @name         LinuxDo 高级过滤器
+// @namespace    https://linux.do/
+// @version      1.5.1
+// @description  增加创建/最后回复日期规则及已访问主题过滤；按 类别/标签/标题正则 过滤 linux.do 主题帖，支持作用域(全局/首页/类别页)、规则优先级(可调)、草稿、匹配预览、导入导出。DSL 支持 AND/OR/NOT。高亮规则独立配色，规则列表支持全规则匹配预览。
 // @author       you
 // @match        https://linux.do/*
-// @updateURL    https://raw.githubusercontent.com/Liu8Can/LinuxDo-Advanced-Fitler/feature/date-filter/linuxdo-filter.user.js
-// @downloadURL  https://raw.githubusercontent.com/Liu8Can/LinuxDo-Advanced-Fitler/feature/date-filter/linuxdo-filter.user.js
 // @run-at       document-start
 // @grant        GM_getValue
 // @grant        GM_setValue
